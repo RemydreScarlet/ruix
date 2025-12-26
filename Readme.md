@@ -22,7 +22,7 @@ Ruixの主な目標は、堅牢で安全なPOSIX準拠のマイクロカーネ�
 - `src/gdt.rs`: Global Descriptor TableとTask State Segmentのセットアップ。
 - `src/interrupts.rs`: Interrupt Descriptor Tableと例外ハンドラ。
 - `Cargo.toml`: プロジェクト設定と依存関係。
-- `x86_64-Ruix.json`: x86_64ベアメタル用のカスタムターゲット仕様。
+- `x86_64-ruix.json`: x86_64ベアメタル用のカスタムターゲット仕様。
 
 ## 依存関係
 
@@ -44,7 +44,7 @@ Ruixの主な目標は、堅牢で安全なPOSIX準拠のマイクロカーネ�
 カーネルをビルドするには：
 
 ```bash
-cargo build --target x86_64-Ruix.json
+cargo build --target x86_64-ruix.json
 ```
 
 ブート可能イメージを作成するには：
@@ -57,7 +57,7 @@ cargo bootimage
 手動でQEMUを使用：
 
 ```bash
-qemu-system-x86_64 -drive format=raw,file=target/x86_64-Ruix/debug/bootimage-Ruix.bin
+qemu-system-x86_64 -drive format=raw,file=target/x86_64-ruix/debug/bootimage-ruix.bin
 ```
 
 ## テスト
