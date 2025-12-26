@@ -5,6 +5,9 @@ use ruix::println;
 use bootloader::{BootInfo, entry_point};
 use x86_64::structures::paging::Page;
 
+extern crate alloc;
+use alloc::{boxed::Box, vec, vec::Vec, rc::Rc};
+
 // パニック時のハンドラらしい。カーネルを作るときはこれがないといけない。
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
@@ -18,8 +21,8 @@ entry_point!(kernel_main);
 
 #[unsafe(no_mangle)]
 fn kernel_main(boot_info: &'static BootInfo) -> ! {
-    use ruix::memory;
-    use ruix::memory::BootInfoFrameAllocator;
+    use ruix::memory::{self, BootInfoFrameAllocator};
+    use ruix::allocator;
     use x86_64::{structures::paging::Translate, VirtAddr};
     println!("Hello World{}", "!");
     ruix::init(); // 割り込みの初期化
@@ -28,13 +31,17 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     let mut mapper = unsafe { memory::init(phys_mem_offset) };
     let mut frame_allocator = unsafe { BootInfoFrameAllocator::init(&boot_info.memory_map) };
 
-    // 未使用のページをマップする
-    let page = Page::containing_address(VirtAddr::new(0));
-    memory::create_example_mapping(page, &mut mapper, &mut frame_allocator);
+    allocator::init_heap(&mut mapper, &mut frame_allocator)
+        .expect("heap initialization failed");
+    
+    let heap_value = Box::new(41);
+    println!("heap_value at {:p}", heap_value);
 
-    // 新しいマッピングを使って、文字列`New!`を画面に書き出す
-    let page_ptr: *mut u64 = page.start_address().as_mut_ptr();
-    unsafe { page_ptr.offset(400).write_volatile(0x_f021_f077_f065_f04e)};
+    let mut vec = Vec::new();
+    for i in 0..500 {
+        vec.push(i);
+    }
+    println!("vec at {:p}", vec.as_ptr());
 
     println!("It did not crash!");
 
