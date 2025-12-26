@@ -1,10 +1,10 @@
-# Runix Kernel
+# Ruix Kernel
 
-Runixは、Rustで書かれた安定したマイクロカーネルで、POSIX準拠を目指しています。このプロジェクトは初期段階で、現在VGAテキスト出力、Global Descriptor Table (GDT)のセットアップ、割り込み処理などの基本的なカーネル機能を実装しています。
+Ruixは、Rustで書かれた安定したマイクロカーネルで、POSIX準拠を目指しています。このプロジェクトは初期段階で、現在VGAテキスト出力、Global Descriptor Table (GDT)のセットアップ、割り込み処理などの基本的なカーネル機能を実装しています。
 
 ## 目標
 
-Runixの主な目標は、堅牢で安全なPOSIX準拠のマイクロカーネルをRustで作成することです。
+Ruixの主な目標は、堅牢で安全なPOSIX準拠のマイクロカーネルをRustで作成することです。
 マイクロカーネルは、カーネルの責任を最小限に抑え、重要なサービスのみをカーネル空間で実行し、他のタスクをユーザースペースプロセスに委任することを目指します。
 
 ## 現在の機能
@@ -22,7 +22,7 @@ Runixの主な目標は、堅牢で安全なPOSIX準拠のマイクロカーネ�
 - `src/gdt.rs`: Global Descriptor TableとTask State Segmentのセットアップ。
 - `src/interrupts.rs`: Interrupt Descriptor Tableと例外ハンドラ。
 - `Cargo.toml`: プロジェクト設定と依存関係。
-- `x86_64-runix.json`: x86_64ベアメタル用のカスタムターゲット仕様。
+- `x86_64-Ruix.json`: x86_64ベアメタル用のカスタムターゲット仕様。
 
 ## 依存関係
 
@@ -44,7 +44,7 @@ Runixの主な目標は、堅牢で安全なPOSIX準拠のマイクロカーネ�
 カーネルをビルドするには：
 
 ```bash
-cargo build --target x86_64-runix.json
+cargo build --target x86_64-Ruix.json
 ```
 
 ブート可能イメージを作成するには：
@@ -57,7 +57,7 @@ cargo bootimage
 手動でQEMUを使用：
 
 ```bash
-qemu-system-x86_64 -drive format=raw,file=target/x86_64-runix/debug/bootimage-runix.bin
+qemu-system-x86_64 -drive format=raw,file=target/x86_64-Ruix/debug/bootimage-Ruix.bin
 ```
 
 ## テスト
