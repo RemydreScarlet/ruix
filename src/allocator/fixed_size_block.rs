@@ -2,9 +2,11 @@
 
 use alloc::alloc::Layout;
 use core::ptr;
+use core::mem;
 
 use super::Locked;
 use alloc::alloc::GlobalAlloc;
+use crate::allocator::fixed_size_block::ptr::NonNull;
 
 struct ListNode {
     next: Option<&'static mut ListNode>,

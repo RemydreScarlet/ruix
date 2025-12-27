@@ -19,6 +19,9 @@ fn panic(_info: &PanicInfo) -> ! {
 
 entry_point!(kernel_main);
 
+use ruix::task::{Task, executor::Executor};
+use ruix::task::keyboard;
+
 #[unsafe(no_mangle)]
 fn kernel_main(boot_info: &'static BootInfo) -> ! {
     use ruix::memory::{self, BootInfoFrameAllocator};
@@ -34,16 +37,27 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     allocator::init_heap(&mut mapper, &mut frame_allocator)
         .expect("heap initialization failed");
     
+    
     let heap_value = Box::new(41);
     println!("heap_value at {:p}", heap_value);
 
-    let mut vec = Vec::new();
-    for i in 0..500 {
-        vec.push(i);
-    }
-    println!("vec at {:p}", vec.as_ptr());
+    // マルチタスクのテスト
+    let mut executor = Executor::new();
+    executor.spawn(Task::new(example_task()));
+    executor.spawn(Task::new(keyboard::print_keypresses()));
+    executor.run();
 
     println!("It did not crash!");
 
     ruix::hlt_loop(); // ハルトループに入る
 }
+
+async fn async_number() -> u32 {
+    42
+}
+
+async fn example_task() {
+    let number = async_number().await;
+    println!("async number: {}", number);
+}
+

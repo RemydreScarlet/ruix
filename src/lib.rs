@@ -3,11 +3,18 @@
 #![feature(alloc_error_handler)] // アロケータのエラーハンドラを使うために必要
 
 #[macro_use]
+// グラフィックドライバ
+// TODO: 外部タスク化
 pub mod vga_buffer;
+// 割り込み
+// TODO: 部分的な外部タスク化
 pub mod interrupts;
 pub mod gdt;
+// メモリ管理
 pub mod memory;
-pub mod allocator; // ハリボテのアロケーターを作っとこう
+pub mod allocator;
+// マルチタスク
+pub mod task;
 
 extern crate alloc;
 
