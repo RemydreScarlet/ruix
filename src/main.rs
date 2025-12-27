@@ -26,7 +26,7 @@ use ruix::task::keyboard;
 fn kernel_main(boot_info: &'static BootInfo) -> ! {
     use ruix::memory::{self, BootInfoFrameAllocator};
     use ruix::allocator;
-    use x86_64::{structures::paging::Translate, VirtAddr};
+    use x86_64::{structures::paging::{Translate, FrameAllocator}, VirtAddr};
     println!("Starting Ruix {}", "0.1");
     ruix::init(); // 割り込みの初期化
 
@@ -38,8 +38,44 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         .expect("heap initialization failed");
     
     
-    let heap_value = Box::new(41);
-    println!("heap_value at {:p}", heap_value);
+    // ユーザー空間の構築
+    let user_code_addr = VirtAddr::new(0x400_000); // 4MB地点
+    let code_page = Page::containing_address(user_code_addr);
+    let code_frame = frame_allocator.allocate_frame().expect("no frames");
+
+    memory::map_user_page(code_page, code_frame, &mut mapper, &mut frame_allocator);
+
+    // ユーザーコードの書き込み
+    // 物理メモリのオフセットを使って確保したフレームに直接書き込む
+    // ゴリ押しってやつ
+    unsafe {
+        let virt = phys_mem_offset + code_frame.start_address().as_u64();
+        let dest = virt.as_mut_ptr::<u8>();
+        core::ptr::write_volatile(dest, 0xEB);
+        core::ptr::write_volatile(dest.add(1), 0xFE);
+    
+        // CPUの命令キャッシュやTLBをリフレッシュ
+        x86_64::instructions::tlb::flush_all();
+    }
+
+    // スタック領域のマップ (0x600_000 = 6MiB地点)
+    let user_stack_base = VirtAddr::new(0x600_000);
+    let stack_page = Page::containing_address(user_stack_base);
+    let stack_frame = frame_allocator.allocate_frame().expect("no frames for stack");
+    
+    memory::map_user_page(stack_page, stack_frame, &mut mapper, &mut frame_allocator);
+    
+    // スタックは高いアドレスから低いアドレスへ伸びるので、ページ末尾を指定
+    let user_stack_top = user_stack_base + 4096u64;
+
+    println!("Memory prepared. Jumping to Ring 3...");
+
+    // ユーザーモードへジャンプ！
+    unsafe {
+        ruix::gdt::jump_to_user_mode(user_code_addr, user_stack_top);
+    }
+
+    // こっちは実行されないはず
 
     // マルチタスクのテスト
     let mut executor = Executor::new();

@@ -10,6 +10,14 @@ pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 lazy_static! {
     static ref TSS: TaskStateSegment = {
         let mut tss = TaskStateSegment::new();
+        // Ring 3 -> Ring0 遷移スタック
+        tss.privilege_stack_table[0] = {
+            const STACK_SIZE: usize = 4096 * 5;
+            static mut STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
+            let stack_start = VirtAddr::from_ptr(unsafe {&raw const STACK});
+            stack_start + STACK_SIZE
+        };
+
         // スタックオーバーフローやダブルフォルトなどの例外処理用にスタックを設定
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
             const STACK_SIZE: usize = 4096 * 5;
@@ -66,4 +74,34 @@ pub fn init() {
 
 pub fn get_selectors() -> &'static Selectors {
     &GDT.1
+}
+
+// ユーザーモード突入
+pub unsafe fn jump_to_user_mode(code_addr: VirtAddr, stack_addr: VirtAddr) -> ! {
+    use x86_64::instructions::segmentation::{CS, Segment};
+    use core::arch::asm;
+
+    let selectors = get_selectors();
+
+    // セレクタに特権レベル3（RPL=3）を設定
+    let data_selector = (selectors.user_data_selector.0 | 3) as u64;
+    let code_selector = (selectors.user_code_selector.0 | 3) as u64;
+
+    unsafe {
+        // IRETQ 用のスタックフレームを手動で構築してジャンプ
+        // 順番: SS, RSP, RFLAGS, CS, RIP
+        asm!(
+            "push {stack_sel}",
+            "push {stack_ptr}",
+            "push 0x202", // RFLAGS (Interrupt Enableフラグを立てる)
+            "push {code_sel}",
+            "push {instruction_ptr}",
+            "iretq",
+            stack_sel = in(reg) data_selector,
+            stack_ptr = in(reg) stack_addr.as_u64(),
+            code_sel = in(reg) code_selector,
+            instruction_ptr = in(reg) code_addr.as_u64(),
+            options(noreturn)
+        );
+    }
 }
