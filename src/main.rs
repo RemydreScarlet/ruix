@@ -27,7 +27,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     use ruix::memory::{self, BootInfoFrameAllocator};
     use ruix::allocator;
     use x86_64::{structures::paging::Translate, VirtAddr};
-    println!("Hello World{}", "!");
+    println!("Starting Ruix {}", "0.1");
     ruix::init(); // 割り込みの初期化
 
     let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);

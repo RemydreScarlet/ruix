@@ -1,5 +1,3 @@
-pub mod bump;
-pub mod linked_list;
 pub mod fixed_size_block;
 
 use alloc::alloc::Layout;
@@ -12,17 +10,9 @@ use x86_64::{
     }, VirtAddr
 };
 
-// どのアロケータ―がいいのかしら
-
-//use linked_list_allocator::LockedHeap;
-//use linked_list::LinkedListAllocator;
-//use bump::BumpAllocator;
 use fixed_size_block::FixedSizeBlockAllocator;
 
 #[global_allocator]
-//static ALLOCATOR: LockedHeap = LockedHeap::empty();
-//static ALLOCATOR: Locked<BumpAllocator> = Locked::new(BumpAllocator::new());
-//static ALLOCATOR: Locked<LinkedListAllocator> = Locked::new(LinkedListAllocator::new());
 static ALLOCATOR: Locked<FixedSizeBlockAllocator> = Locked::new(FixedSizeBlockAllocator::new());
 
 // ヒープ領域の開始アドレスとサイズ

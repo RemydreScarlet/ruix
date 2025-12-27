@@ -26,24 +26,44 @@ lazy_static! {
 lazy_static! {
     static ref GDT: (GlobalDescriptorTable, Selectors) = {
         let mut gdt = GlobalDescriptorTable::new();
+        // カーネルモード用のセグメント
         let code_selector = gdt.add_entry(Descriptor::kernel_code_segment());
+
+        // ユーザーモード用のセグメント
+        // Data Segmentはスタックやヒープに使用
+        let user_data_selector = gdt.add_entry(Descriptor::user_data_segment());
+        let user_code_selector = gdt.add_entry(Descriptor::user_code_segment());
+
+        // TSS
         let tss_selector = gdt.add_entry(Descriptor::tss_segment(&TSS));
-        (gdt, Selectors{code_selector, tss_selector})
+        (gdt, Selectors {
+            code_selector,
+            user_code_selector,
+            user_data_selector,
+            tss_selector,
+        })
     };
 }
 
 struct Selectors {
-    code_selector: SegmentSelector,
-    tss_selector: SegmentSelector,
+    pub code_selector: SegmentSelector,
+    pub user_code_selector: SegmentSelector,
+    pub user_data_selector: SegmentSelector,
+    pub tss_selector: SegmentSelector,
 }
 
 
 pub fn init() {
     use x86_64::instructions::segmentation::set_cs;
     use x86_64::instructions::tables::load_tss;
+    
     GDT.0.load();
     unsafe {
         set_cs(GDT.1.code_selector);
         load_tss(GDT.1.tss_selector);
     }
+}
+
+pub fn get_selectors() -> &'static Selectors {
+    &GDT.1
 }
