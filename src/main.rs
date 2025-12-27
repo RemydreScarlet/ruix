@@ -51,9 +51,10 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     unsafe {
         let virt = phys_mem_offset + code_frame.start_address().as_u64();
         let dest = virt.as_mut_ptr::<u8>();
-        core::ptr::write_volatile(dest, 0xEB);
-        core::ptr::write_volatile(dest.add(1), 0xFE);
-    
+        core::ptr::write_volatile(dest.add(0), 0x0F);
+        core::ptr::write_volatile(dest.add(1), 0x05);
+        core::ptr::write_volatile(dest.add(2), 0xEB);
+        core::ptr::write_volatile(dest.add(3), 0xFE);
         // CPUの命令キャッシュやTLBをリフレッシュ
         x86_64::instructions::tlb::flush_all();
     }

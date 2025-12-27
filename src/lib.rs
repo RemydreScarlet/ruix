@@ -15,12 +15,16 @@ pub mod memory;
 pub mod allocator;
 // マルチタスク
 pub mod task;
+// システムコール
+pub mod syscall;
+
 
 extern crate alloc;
 
 pub fn init() {
     interrupts::init_idt();
     gdt::init();
+    syscall::init();
     unsafe { interrupts::PICS.lock().initialize() };
     x86_64::instructions::interrupts::enable();
 }

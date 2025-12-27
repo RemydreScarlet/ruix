@@ -36,6 +36,7 @@ lazy_static! {
         let mut gdt = GlobalDescriptorTable::new();
         // カーネルモード用のセグメント
         let code_selector = gdt.add_entry(Descriptor::kernel_code_segment());
+        let data_selector = gdt.add_entry(Descriptor::kernel_data_segment());
 
         // ユーザーモード用のセグメント
         // Data Segmentはスタックやヒープに使用
@@ -46,6 +47,7 @@ lazy_static! {
         let tss_selector = gdt.add_entry(Descriptor::tss_segment(&TSS));
         (gdt, Selectors {
             code_selector,
+            data_selector,
             user_code_selector,
             user_data_selector,
             tss_selector,
@@ -53,21 +55,29 @@ lazy_static! {
     };
 }
 
-struct Selectors {
+pub struct Selectors {
     pub code_selector: SegmentSelector,
+    pub data_selector: SegmentSelector,
     pub user_code_selector: SegmentSelector,
     pub user_data_selector: SegmentSelector,
     pub tss_selector: SegmentSelector,
 }
 
+// カーネル特権スタックの最上部アドレスを返す。
+pub fn kernel_stack_top() -> VirtAddr {
+    // TSS.privilege_stack_table[0] を返す
+    TSS.privilege_stack_table[0]
+}
 
 pub fn init() {
     use x86_64::instructions::segmentation::set_cs;
     use x86_64::instructions::tables::load_tss;
-    
+    use x86_64::registers::segmentation::{SS, Segment};
+
     GDT.0.load();
     unsafe {
         set_cs(GDT.1.code_selector);
+        SS::set_reg(GDT.1.data_selector);
         load_tss(GDT.1.tss_selector);
     }
 }

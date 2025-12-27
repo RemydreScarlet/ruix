@@ -1,4 +1,3 @@
-pub mod simple_executor; // 簡単なexecutorを作っとく。
 pub mod executor;
 pub mod keyboard;        // キーボードドライバ
 
