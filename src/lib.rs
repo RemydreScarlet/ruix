@@ -18,6 +18,8 @@ pub mod task;
 // システムコール
 pub mod syscall;
 
+pub mod process;
+
 
 extern crate alloc;
 

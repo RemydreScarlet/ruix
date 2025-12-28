@@ -1,3 +1,6 @@
+use x86_64::VirtAddr;
+use core::arch::naked_asm;
+
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 use pic8259::ChainedPics;
 
@@ -5,7 +8,6 @@ use lazy_static::lazy_static;
 use spin;
 
 use crate::hlt_loop;
-
 use crate::gdt;
 
 pub const PIC_1_OFFSET: u8 = 32;
@@ -18,13 +20,14 @@ pub static PICS: spin::Mutex<ChainedPics> =
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
+        let timer_addr = VirtAddr::new(timer_interrupt_handler as u64);
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         idt.page_fault.set_handler_fn(page_fault_handler);
         unsafe {
             idt.double_fault.set_handler_fn(double_fault_handler)
                 .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
+            idt[InterruptIndex::Timer.as_usize()].set_handler_addr(timer_addr);
         }
-        idt[InterruptIndex::Timer.as_usize()].set_handler_fn(timer_interrupt_handler);
         idt[InterruptIndex::Keyboard.as_usize()].set_handler_fn(keyboard_interrupt_handler);
         idt
     };
@@ -63,14 +66,56 @@ extern "x86-interrupt" fn page_fault_handler(
 }
 
 // キーボード割り込み、タイマーハンドラ
-extern "x86-interrupt" fn timer_interrupt_handler(
+#[unsafe(naked)]
+pub unsafe extern "C" fn timer_interrupt_handler(
     _stack_frame: InterruptStackFrame)
 {
-    print!(".");
-    unsafe {
-        PICS.lock()
-            .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
-    }
+    naked_asm!(
+        // 1. 汎用レジスタをすべてスタックに積む (Context構造体の並びに合わせる)
+        "push rax",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+        "push rbx",
+        "push rbp",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+
+        "sub rsp, 8",         // アライメント調整（16バイト境界にする）
+        "mov rdi, rsp",
+        "add rdi, 8",         // 引数には「元のContextの先頭」を渡す
+        "call {switch_handler}",
+        "add rsp, 8",         // 調整を戻す
+
+        "mov rsp, rax",
+
+        // 新しいタスクのレジスタを復元
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop rbp",
+        "pop rbx",
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "pop rax",
+
+        "iretq",
+        switch_handler = sym crate::process::handle_switch,
+    );
 }
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(

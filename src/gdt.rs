@@ -14,7 +14,7 @@ lazy_static! {
         tss.privilege_stack_table[0] = {
             const STACK_SIZE: usize = 4096 * 5;
             static mut STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
-            let stack_start = VirtAddr::from_ptr(unsafe {&raw const STACK});
+            let stack_start = VirtAddr::from_ptr(&raw const STACK);
             stack_start + STACK_SIZE
         };
 

@@ -23,8 +23,10 @@ static mut CPU_DATA: CpuData = CpuData {
 pub fn init() {
     use x86_64::registers::model_specific::Efer;
     
+    // SYSCALLを有効化
     unsafe {
         Efer::update(|f| f.insert(x86_64::registers::model_specific::EferFlags::SYSTEM_CALL_EXTENSIONS));
+        SFMask::write(RFlags::INTERRUPT_FLAG);
     }
 
     let selectors = gdt::get_selectors();
@@ -96,5 +98,5 @@ unsafe extern "C" fn asm_syscall_handler() {
 extern "C" fn rust_syscall_handler(stack_ptr: u64) {
     // 本来ならRAXレジスタの値などで処理を分岐
     // 現在はデバッグ用にprintln!を出すだけにする
-    crate::println!("Syscall triggered! Stack at: {:#x}", stack_ptr);
+    //crate::println!("Syscall triggered! Stack at: {:#x}", stack_ptr);
 }
