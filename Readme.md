@@ -1,60 +1,73 @@
 # Ruix Kernel
 
-Ruixは、Rustで書かれた安定したマイクロカーネルで、POSIX準拠を目指しています。このプロジェクトは初期段階で、現在VGAテキスト出力、Global Descriptor Table (GDT)のセットアップ、割り込み処理などの基本的なカーネル機能を実装しています。
+RuixはRustで書かれたマイクロカーネルです。Linux互換を長期目標に据えつつ、現在はx86_64上での低レベル機能の実装と安定化に集中しています。
 
 ## 目標
 
-Ruixの主な目標は、堅牢で安全なPOSIX準拠のマイクロカーネルをRustで作成することです。
-マイクロカーネルは、カーネルの責任を最小限に抑え、重要なサービスのみをカーネル空間で実行し、他のタスクをユーザースペースプロセスに委任することを目指します。
+Ruixの目的は、最小限のカーネル機能を安全かつ堅牢にRustで実装することです。長期的にはプロセス管理やIPCを含むLinux互換層を構築することを目指します。
 
-## 現在の機能
+## 現在の機能（主要な実装箇所）
 
-- **VGAバッファ**: VGAディスプレイ用のテキストベース出力システムを実装しており、カラーサポートと基本的な印刷マクロ（`print!` と `println!`）を含みます。
-- **Global Descriptor Table (GDT)**: メモリセグメンテーションのためのGDTをセットアップし、割り込み処理のためのTask State Segment (TSS)を含みます。
-- **割り込み処理**: Interrupt Descriptor Table (IDT)を初期化し、ブレークポイントとダブルフォルトのハンドラを設定します。
-- **パニック処理**: パニック情報を画面に印刷するカスタムパニックハンドラ。
+- VGAテキスト出力と基本的な `print!` / `println!` 機能（`src/vga_buffer.rs`）。
+- Global Descriptor Table (GDT) と Task State Segment の初期化（`src/gdt.rs`）。
+- Interrupt Descriptor Table (IDT) と例外ハンドラ（`src/interrupts.rs`）。
+- カスタムパニックハンドラ（画面出力）。
+- メモリ管理の基礎（`src/memory.rs`）とアロケータ実装（`src/allocator.rs`、`src/allocator/fixed_size_block.rs`）。
+- 簡易なタスク実行環境（`src/task/executor.rs`、`src/task/keyboard.rs`、`src/task/mod.rs`）。
+- システムコールの枠組み（`src/syscall.rs`）。
 
-## プロジェクト構造
+## プロジェクト構造（主なファイル）
 
-- `src/main.rs`: カーネルのエントリーポイント（`_start` 関数）。
-- `src/lib.rs`: カーネルの公開APIを公開し、コアコンポーネントを初期化するライブラリモジュール。
-- `src/vga_buffer.rs`: 画面出力のためのVGAテキストバッファの実装。
-- `src/gdt.rs`: Global Descriptor TableとTask State Segmentのセットアップ。
-- `src/interrupts.rs`: Interrupt Descriptor Tableと例外ハンドラ。
-- `Cargo.toml`: プロジェクト設定と依存関係。
-- `x86_64-ruix.json`: x86_64ベアメタル用のカスタムターゲット仕様。
+- [src/main.rs](src/main.rs): カーネルのエントリーポイント（`_start`）。
+- [src/lib.rs](src/lib.rs): ライブラリ層、初期化シーケンスの公開。 
+- [src/vga_buffer.rs](src/vga_buffer.rs): VGAテキストバッファの実装。
+- [src/gdt.rs](src/gdt.rs): GDT/TSS セットアップ。
+- [src/interrupts.rs](src/interrupts.rs): IDT と例外ハンドラ。
+- [src/memory.rs](src/memory.rs): メモリ管理ユーティリティ。
+- [src/allocator.rs](src/allocator.rs) と [src/allocator/fixed_size_block.rs](src/allocator/fixed_size_block.rs): アロケータ実装。
+- [src/syscall.rs](src/syscall.rs): システムコール処理の基礎。
+- [src/task](src/task): タスク周りの実装（executor, keyboard など）。
+- Cargo.toml: 依存関係とビルド設定。
+- x86_64-ruix.json: カスタムターゲット仕様（x86_64ベアメタル）。
 
 ## 依存関係
 
-- `bootloader`: カーネルのブート用。
-- `volatile`: 安全な揮発性メモリアクセス用。
-- `spin`: スピンロックベースの同期プリミティブ。
-- `x86_64`: 低レベルx86_64アーキテクチャサポート。
-- `lazy_static`: 遅延静的初期化。
+- `bootloader` / `bootimage`（ブート可能イメージ作成、開発用）
+- `volatile`（揮発性メモリアクセス）
+- `spin`（シンプルなスピンロック）
+- `x86_64`（x86_64向け低レベル補助）
+- `lazy_static`（静的初期化）
+
+（詳細は `Cargo.toml` を参照してください）
 
 ## ビルドと実行
 
 ### 前提条件
 
-- Rust（一部の機能でnightlyツールチェーンが必要）
-- ブート可能イメージ作成用の`bootimage`ツール: `cargo install bootimage`
+- Rust（nightlyが必要になる場合があります）
+- `bootimage`（ブートイメージを作るなら）:
+
+```bash
+cargo install bootimage
+```
 
 ### ビルド
 
-カーネルをビルドするには：
+カーネルをターゲット `x86_64-ruix.json` でビルド:
 
 ```bash
 cargo build --target x86_64-ruix.json
 ```
 
-ブート可能イメージを作成するには：
+ブート可能イメージを作成する（`bootimage` インストール済みの場合）:
 
 ```bash
 cargo bootimage
 ```
 
-### 実行
-手動でQEMUを使用：
+### 実行（QEMU）
+
+生成されたブートイメージをQEMUで起動する例:
 
 ```bash
 qemu-system-x86_64 -drive format=raw,file=target/x86_64-ruix/debug/bootimage-ruix.bin
@@ -62,16 +75,16 @@ qemu-system-x86_64 -drive format=raw,file=target/x86_64-ruix/debug/bootimage-rui
 
 ## テスト
 
-現在、カーネルにはパニック処理を示すためにスタックオーバーフローを引き起こす簡単なテストが含まれています。これにより、パニック情報が画面に印刷されます。
+開発用に簡単なテストやクラッシュ（例：スタックオーバーフロー）を用意してあり、カスタムパニックハンドラの表示を確認できます。自動化されたテストは現在限定的です。
 
 ## 貢献
 
-貢献を歓迎します！ 問題の報告、機能リクエスト、プルリクエストを自由に提出してください。このプロジェクトは教育的なもので実験的なので、カーネル設計と実装に関する議論を歓迎します。
+貢献歓迎です。IssueやPRで提案、バグ報告、機能追加の提案を送ってください。実験的なコードが含まれるため、議論を通じて設計を固める流れを推奨します。
 
 ## ライセンス
 
-このプロジェクトはMITライセンスの下でライセンスされています。詳細はLICENSEファイルを参照してください。
+このプロジェクトはMITライセンスの下で公開されています。詳細はLICENSEファイルを参照してください。
 
 ## 謝辞
 
-このプロジェクトは、さまざまなOS開発チュートリアルとRustコミュニティにインスパイアされています。`x86_64`クレートとブートローダー実装の作者に特別な感謝を。
+本プロジェクトはOS開発チュートリアルやx86_64クレート、ブートローダー実装から多くを学んでいます。参考資料とコミュニティに感謝します。
