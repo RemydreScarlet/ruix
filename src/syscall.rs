@@ -1,4 +1,4 @@
-use x86_64::registers::model_specific::{LStar, Star, SFMask, GsBase, KernelGsBase};
+use x86_64::registers::model_specific::{LStar, Star, SFMask, KernelGsBase};
 use x86_64::structures::gdt::SegmentSelector;
 use x86_64::registers::rflags::RFlags;
 use crate::gdt;
@@ -98,5 +98,5 @@ unsafe extern "C" fn asm_syscall_handler() {
 extern "C" fn rust_syscall_handler(stack_ptr: u64) {
     // 本来ならRAXレジスタの値などで処理を分岐
     // 現在はデバッグ用にprintln!を出すだけにする
-    //crate::println!("Syscall triggered! Stack at: {:#x}", stack_ptr);
+    crate::println!("Syscall triggered! Stack at: {:#x}", stack_ptr);
 }

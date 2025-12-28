@@ -110,7 +110,9 @@ unsafe fn set_user_bit_for_parents(addr: VirtAddr, mapper: &mut OffsetPageTable)
         entry.set_flags(entry.flags() | PageTableFlags::USER_ACCESSIBLE);
         
         let next_table_virt = phys_offset + entry.frame().unwrap().start_address().as_u64();
-        table = &mut *(next_table_virt.as_mut_ptr());
+        unsafe {
+            table = &mut *(next_table_virt.as_mut_ptr());
+        }
     }
 }
 
