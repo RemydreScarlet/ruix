@@ -7,6 +7,8 @@ use x86_64::{
 use bootloader::bootinfo::MemoryRegionType;
 use bootloader::bootinfo::MemoryMap;
 
+pub mod scalable;
+
 // ブートローダのメモリマップから、使用可能な
 // フレームを返すFrameAllocator
 pub struct BootInfoFrameAllocator {

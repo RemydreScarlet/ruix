@@ -70,7 +70,7 @@ cargo bootimage
 生成されたブートイメージをQEMUで起動する例:
 
 ```bash
-qemu-system-x86_64 -drive format=raw,file=target/x86_64-ruix/debug/bootimage-ruix.bin
+qemu-system-x86_64 -drive format=raw,file=target/x86_64-ruix/debug/bootimage-ruix.bin -serial file:serial_output.log
 ```
 
 ## テスト

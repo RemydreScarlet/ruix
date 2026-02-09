@@ -70,13 +70,12 @@ pub fn kernel_stack_top() -> VirtAddr {
 }
 
 pub fn init() {
-    use x86_64::instructions::segmentation::set_cs;
     use x86_64::instructions::tables::load_tss;
-    use x86_64::registers::segmentation::{SS, Segment};
+    use x86_64::instructions::segmentation::{CS, SS, Segment};
 
     GDT.0.load();
     unsafe {
-        set_cs(GDT.1.code_selector);
+        CS::set_reg(GDT.1.code_selector);
         SS::set_reg(GDT.1.data_selector);
         load_tss(GDT.1.tss_selector);
     }
@@ -88,7 +87,6 @@ pub fn get_selectors() -> &'static Selectors {
 
 // ユーザーモード突入
 pub unsafe fn jump_to_user_mode(code_addr: VirtAddr, stack_addr: VirtAddr) -> ! {
-    use x86_64::instructions::segmentation::{CS, Segment};
     use core::arch::asm;
 
     let selectors = get_selectors();

@@ -1,6 +1,8 @@
 #![no_std]
 #![feature(abi_x86_interrupt)]
-#![feature(alloc_error_handler)] // アロケータのエラーハンドラを使うために必要
+#![feature(alloc_error_handler)]
+
+extern crate alloc;
 
 #[macro_use]
 // グラフィックドライバ
@@ -17,16 +19,30 @@ pub mod allocator;
 pub mod task;
 // システムコール
 pub mod syscall;
+// タイマー
+pub mod timer;
+// シリアル通信
+pub mod serial;
+// IPC (プロセス間通信)
+pub mod ipc;
 
 pub mod process;
 
+// 新しいスケーラブルなサブシステム
+pub mod error;
+pub mod cpu;
+pub mod testing;
 
-extern crate alloc;
+// テストスイート
+#[cfg(test)]
+pub mod tests;
 
 pub fn init() {
+    serial::init(); // 最初にシリアルポートを初期化（デバッグ用）
     interrupts::init_idt();
     gdt::init();
     syscall::init();
+    timer::init(); // タイマーを再有効化
     unsafe { interrupts::PICS.lock().initialize() };
     x86_64::instructions::interrupts::enable();
 }

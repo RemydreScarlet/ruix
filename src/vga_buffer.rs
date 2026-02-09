@@ -167,6 +167,46 @@ pub fn _print(args: fmt::Arguments) {
     use x86_64::instructions::interrupts;
     
     interrupts::without_interrupts(|| {
+        // VGAに出力
         WRITER.lock().write_fmt(args).unwrap();
+        
+        // シリアルポートにも出力（デバッグ用）
+        // format_args!を文字列に変換してシリアル出力
+        let mut buffer = [0u8; 1024];
+        let mut writer = BufferWriter::new(&mut buffer);
+        writer.write_fmt(args).unwrap();
+        let len = writer.len();
+        let text = core::str::from_utf8(&buffer[..len]).unwrap_or("Invalid UTF-8");
+        crate::serial::write_str(text);
     });
+}
+
+// シリアル出力用の簡易バッファライタ
+struct BufferWriter<'a> {
+    buffer: &'a mut [u8],
+    pos: usize,
+}
+
+impl<'a> BufferWriter<'a> {
+    fn new(buffer: &'a mut [u8]) -> Self {
+        BufferWriter { buffer, pos: 0 }
+    }
+    
+    fn len(&self) -> usize {
+        self.pos
+    }
+}
+
+impl<'a> fmt::Write for BufferWriter<'a> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let bytes = s.as_bytes();
+        let end = core::cmp::min(self.pos + bytes.len(), self.buffer.len());
+        
+        if let Some(slice) = self.buffer.get_mut(self.pos..end) {
+            slice.copy_from_slice(&bytes[..end - self.pos]);
+            self.pos = end;
+        }
+        
+        Ok(())
+    }
 }

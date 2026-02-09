@@ -1,0 +1,10 @@
+Starting Ruix 0.1
+CPU_DATA address: 0x254630
+Testing serial port...
+Serial port initializing...
+Serial port initialized
+Serial port test completed
+Mapping user code 2 at 0x500000 to frame 0x2a6000
+User code 2 mapped successfully
+Skipping user mode jump for testing...
+It did not crash!

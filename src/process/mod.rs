@@ -1,3 +1,5 @@
+use x86_64::{structures::paging::{PhysFrame, Size4KiB, FrameAllocator, OffsetPageTable}};
+
 pub mod scheduler;
 
 #[derive(Debug, Clone, Copy)]
@@ -20,16 +22,19 @@ pub struct Context {
 pub struct Process {
     pub id: u64,
     pub context_ptr: u64, // 保存されたContext構造体へのポインタ
-    // TODO: ページテーブル(CR3)なども追加する
+    pub page_table_frame: PhysFrame, // プロセス固有のページテーブル
 }
 
 impl Process {
-    pub fn new(id: u64, entry_point: u64, stack_top: u64) -> Self {
+    pub fn new(id: u64, entry_point: u64, stack_top: u64, mapper: &mut OffsetPageTable, frame_allocator: &mut impl FrameAllocator<Size4KiB>) -> Self {
         // 1. Context構造体のサイズ分だけスタックの「下」を指す
         let context_ptr = (stack_top - core::mem::size_of::<Context>() as u64) as *mut Context;
 
+        // 2. プロセス固有のページテーブルを作成
+        let page_table_frame = create_process_page_table_with_user_mappings(mapper, frame_allocator);
+
         unsafe {
-            // 2. その場所に初期値を書き込む
+            // 3. その場所に初期値を書き込む
             (*context_ptr) = Context {
                 r15: 0, r14: 0, r13: 0, r12: 0,
                 rbp: 0, rbx: 0,
@@ -47,8 +52,34 @@ impl Process {
         Process {
             id,
             context_ptr: context_ptr as u64,
+            page_table_frame,
         }
     }
+}
+
+// プロセス固有のページテーブルを作成し、ユーザー空間のマッピングをコピーする関数
+fn create_process_page_table_with_user_mappings(mapper: &mut OffsetPageTable, frame_allocator: &mut impl FrameAllocator<Size4KiB>) -> PhysFrame {
+    use x86_64::structures::paging::PageTable;
+
+    // 新しいL4ページテーブルフレームを割り当てる
+    let page_table_frame = frame_allocator.allocate_frame().expect("no frames available for page table");
+
+    // 物理メモリオフセットを取得
+    let phys_offset = mapper.phys_offset();
+
+    // 新しいページテーブルの仮想アドレスを取得
+    let new_table_virt = phys_offset + page_table_frame.start_address().as_u64();
+    let new_table = unsafe { &mut *(new_table_virt.as_mut_ptr() as *mut PageTable) };
+
+    // 現在のページテーブル（カーネルページテーブル）を取得
+    let current_table = mapper.level_4_table();
+
+    // 全てのエントリをコピー（カーネルマッピング + ユーザーマッピング）
+    for i in 0..512 {
+        new_table[i] = current_table[i].clone();
+    }
+
+    page_table_frame
 }
 
 #[unsafe(no_mangle)]

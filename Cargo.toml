@@ -2,6 +2,11 @@
 name = "ruix"
 version = "0.1.0"
 edition = "2024"
+test = false
+
+[lib]
+test = false
+autotests = false
 
 [dependencies]
 bootloader = {version = "0.9", features = ["map_physical_memory"]}
@@ -11,6 +16,7 @@ x86_64 = "0.14.2"
 pic8259 = "0.10.1"
 pc-keyboard = "0.7.0"
 linked_list_allocator = "0.9.0"
+uart_16550 = "0.2.0"
 
 [dependencies.lazy_static]
 version = "1.0"
@@ -29,6 +35,8 @@ features = ["alloc"]
 version = "0.2.1"
 default-features = false
 features = ["alloc"]
+
+[package.metadata.bootimage]
 
 [profile.dev]
 panic = "abort"

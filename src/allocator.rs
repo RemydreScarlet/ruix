@@ -27,7 +27,7 @@ impl<A> Locked<A> {
         }
     }
 
-    pub fn lock(&self) -> spin::MutexGuard<A> {
+    pub fn lock(&self) -> spin::MutexGuard<'_, A> {
         self.inner.lock()
     }
 }
@@ -60,24 +60,3 @@ pub fn init_heap(
     }
     Ok(())
 }
-
-// 与えられたアドレス`addr`を`align`に上丸めする関数
-fn align_up(addr: usize, align: usize) -> usize {
-    let remainder = addr % align;
-    if remainder == 0 {
-        addr // addr はすでに丸められていた
-    } else {
-        addr - remainder + align
-    }
-}
-
-
-// どっちがいいのかなあ。
-/*
-// 与えられたアドレス`addr`を`align`に上丸めする
-//
-// `align`は2の累乗でなければならない
-fn align_up(addr: usize, align: usize) -> usize {
-    (addr + align - 1) & !(align - 1)
-}
-*/
