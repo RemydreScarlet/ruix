@@ -1,6 +1,35 @@
 use x86_64::{structures::paging::{PhysFrame, Size4KiB, FrameAllocator, OffsetPageTable}};
+use spin::Mutex;
+use lazy_static::lazy_static;
 
 pub mod scheduler;
+
+lazy_static! {
+    static ref NEXT_PID: Mutex<u64> = Mutex::new(1);
+}
+
+pub fn allocate_pid() -> u64 {
+    let mut pid = NEXT_PID.lock();
+    let current = *pid;
+    *pid += 1;
+    current
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ProcessState {
+    Running,
+    Ready,
+    Waiting(WaitReason),
+    Zombie,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WaitReason {
+    Child(u64),
+    IpcReceive(u64),
+    IpcSend(u64),
+    Sleep(u64),
+}
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
@@ -21,8 +50,12 @@ pub struct Context {
 
 pub struct Process {
     pub id: u64,
-    pub context_ptr: u64, // 保存されたContext構造体へのポインタ
-    pub page_table_frame: PhysFrame, // プロセス固有のページテーブル
+    pub context_ptr: u64,
+    pub page_table_frame: PhysFrame,
+    pub state: ProcessState,
+    pub parent_id: u64,
+    pub children: alloc::vec::Vec<u64>,
+    pub exit_code: i32,
 }
 
 impl Process {
@@ -53,7 +86,35 @@ impl Process {
             id,
             context_ptr: context_ptr as u64,
             page_table_frame,
+            state: ProcessState::Ready,
+            parent_id: 0,
+            children: alloc::vec::Vec::new(),
+            exit_code: 0,
         }
+    }
+
+    pub fn fork(&self, mapper: &mut OffsetPageTable, frame_allocator: &mut impl FrameAllocator<Size4KiB>) -> Result<Self, &'static str> {
+        // Allocate new PID for child
+        let child_pid = allocate_pid();
+        
+        // Copy the current context (registers will be set after fork)
+        let current_context = unsafe { &*(self.context_ptr as *const Context) };
+        
+        // Create child process with same entry point and stack
+        let mut child = Self::new(child_pid, current_context.rip, current_context.rsp, mapper, frame_allocator);
+        
+        // Set parent-child relationship
+        child.parent_id = self.id;
+        
+        // Copy register state from parent
+        let child_context = unsafe { &mut *(child.context_ptr as *mut Context) };
+        *child_context = current_context.clone();
+        
+        // Set return values:
+        // Parent gets child PID, child gets 0
+        child_context.rax = 0; // Child returns 0
+        
+        Ok(child)
     }
 }
 

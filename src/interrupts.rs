@@ -100,6 +100,9 @@ pub unsafe extern "C" fn timer_interrupt_handler(
         "add rdi, 8",         // 引数には「元のContextの先頭」を渡す
         "call {switch_handler}",
         "add rsp, 8",         // 調整を戻す
+        
+        // タイムアウトチェックを呼び出す
+        "call {timeout_handler}",
 
         "mov rsp, rax",
 
@@ -122,6 +125,7 @@ pub unsafe extern "C" fn timer_interrupt_handler(
 
         "iretq",
         switch_handler = sym crate::process::handle_switch,
+        timeout_handler = sym crate::timer::increment_tick,
     );
 }
 
