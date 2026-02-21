@@ -84,7 +84,7 @@ fn validate_stack_pointer(stack_ptr: u64) -> bool {
 fn validate_syscall_number(syscall_number: u64) -> bool {
     // サポートされているシステムコール番号の範囲チェック
     match syscall_number {
-        0 | 1 | 2 | 3 | 4 | 24 | 39 | 57 | 61 => {
+        0 | 1 | 2 | 3 | 4 | 24 | 39 | 57 | 60 | 61 => {
             crate::println!("SECURITY: Valid syscall number: {}", syscall_number);
             true
         }
@@ -269,34 +269,98 @@ pub extern "C" fn rust_syscall_handler(stack_ptr: u64) -> u64 {
             use crate::process::scheduler::SCHEDULER;
             
             let mut sched = SCHEDULER.lock();
-            if let Some(parent_process) = sched.processes.front() {
-                if parent_process.id == current_pid {
-                    // 安全なPID割り当て
-                    let child_pid = crate::process::allocate_pid();
-                    
-                    // 子プロセスを親プロセスのchildrenリストに追加
-                    // スケジューラーロック内で安全に操作
-                    for process in &mut sched.processes {
-                        if process.id == current_pid {
-                            process.children.push(child_pid);
-                            break;
-                        }
-                    }
-                    
-                    crate::println!("Fork: Parent {} created child {}", current_pid, child_pid);
-                    child_pid as i64 // Parent returns child PID
-                } else {
-                    -1i64 // Error: process not found
-                }
-            } else {
-                -1i64 // Error: no current process
+            let child_pid = crate::process::allocate_pid();
+            
+            // 現在のプロセス情報を取得
+            let current_process = sched.get_process(current_pid)
+                .ok_or(-1i64 as u64); // Error if not found
+            
+            if current_process == -1i64 as u64 {
+                return -1i64 as u64; // Error: current process not found
             }
+            
+            // 子プロセスを作成（同じエントリーポイントとスタックを使用）
+            // 注意：実際のforkではメモリ空間のコピーが必要だが、ここでは簡易実装
+            let mut child_process = current_process.clone();
+            child_process.id = child_pid;
+            child_process.parent_id = current_pid;
+            child_process.state = ProcessState::Ready;
+            
+            // 親プロセスに子を追加
+            for process in &mut sched.processes {
+                if process.id == current_pid {
+                    process.add_child(child_pid);
+                    break;
+                }
+            }
+            
+            // 子プロセスをスケジューラーに追加
+            sched.add_process(child_process);
+            
+            crate::println!("Fork: Parent {} created child {}", current_pid, child_pid);
+            child_pid as i64 // Parent returns child PID, child returns 0
         }
         61 => {
             // wait4: Wait for child process to exit
             // Arguments: RDI=pid, RSI=status_ptr, RDX=options, R10=ru_ptr
             let target_pid = args.arg1;
             let status_ptr = args.arg2;
+            
+            crate::println!("Syscall: wait from PID {} for child {}", current_pid, target_pid);
+            
+            use crate::process::scheduler::SCHEDULER;
+            let mut sched = SCHEDULER.lock();
+            
+            // 現在のプロセスを待機状態に設定
+            sched.set_process_state(current_pid, ProcessState::Waiting(WaitReason::Child(target_pid)));
+            
+            // 子プロセスがすでに終了しているかチェック
+            if let Some(child_process) = sched.get_process(target_pid) {
+                if child_process.is_terminated() {
+                    // 子プロセスが終了している場合、ステータスを戻し終了コードを返す
+                    sched.set_process_state(current_pid, ProcessState::Ready);
+                    
+                    // ステータスポインタに終了コードを書き込み
+                    if status_ptr != 0 {
+                        unsafe {
+                            let status_ptr = status_ptr as *mut i32;
+                            *status_ptr = child_process.exit_code;
+                        }
+                    }
+                    
+                    child_process.exit_code as i64
+                } else {
+                    // 子プロセスがまだ終了していない場合、-1を返す（ECHILD）
+                    -1i64
+                }
+            } else {
+                // 子プロセスが存在しない場合、-1を返す（ECHILD）
+                -1i64
+            }
+        }
+        
+        60 => {
+            // exit: Terminate current process
+            let exit_code = args.arg1 as i32;
+            crate::println!("Syscall: exit from PID {} with code {}", current_pid, exit_code);
+            
+            use crate::process::scheduler::SCHEDULER;
+            let mut sched = SCHEDULER.lock();
+            
+            // プロセスを終了状態に設定
+            if let Some(process) = sched.process_map.get_mut(&current_pid) {
+                let _ = process.exit(exit_code);
+            }
+            
+            // 現在のプロセスをスケジューリングから削除し、アイドル状態へ
+            sched.current_process = None;
+            unsafe {
+                crate::syscall::CPU_DATA.current_process_id = 0;
+            }
+            
+            // 終了したプロセスは再スケジューリングされない
+            0i64 // 成功
+        }
             let options = args.arg3;
             
             // セキュリティ：引数の検証
