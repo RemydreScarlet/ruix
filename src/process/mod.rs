@@ -1,11 +1,26 @@
 use x86_64::{structures::paging::{PhysFrame, Size4KiB, FrameAllocator, OffsetPageTable}};
 use spin::Mutex;
 use lazy_static::lazy_static;
+use crate::error::{KernelError, ProcessError};
+use crate::error::KernelResult;
+use crate::kerror;
 
 pub mod scheduler;
 
 lazy_static! {
     static ref NEXT_PID: Mutex<u64> = Mutex::new(1);
+    static ref NEXT_PGID: Mutex<u64> = Mutex::new(1);
+    static ref NEXT_SID: Mutex<u64> = Mutex::new(1);
+}
+
+// Simple timestamp counter for process creation times
+static mut TIMESTAMP_COUNTER: u64 = 0;
+
+pub fn get_current_time() -> u64 {
+    unsafe {
+        TIMESTAMP_COUNTER += 1;
+        TIMESTAMP_COUNTER
+    }
 }
 
 pub fn allocate_pid() -> u64 {
@@ -15,12 +30,27 @@ pub fn allocate_pid() -> u64 {
     current
 }
 
+pub fn allocate_pgid() -> u64 {
+    let mut pgid = NEXT_PGID.lock();
+    let current = *pgid;
+    *pgid += 1;
+    current
+}
+
+pub fn allocate_sid() -> u64 {
+    let mut sid = NEXT_SID.lock();
+    let current = *sid;
+    *sid += 1;
+    current
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ProcessState {
     Running,
     Ready,
     Waiting(WaitReason),
     Zombie,
+    Stopped,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -48,6 +78,44 @@ pub struct Context {
     ss: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct ResourceLimits {
+    pub max_memory: u64,      // Maximum memory in bytes
+    pub max_cpu_time: u64,    // Maximum CPU time in milliseconds
+    pub max_processes: u32,   // Maximum number of child processes
+    pub max_files: u32,       // Maximum number of open files
+}
+
+impl Default for ResourceLimits {
+    fn default() -> Self {
+        Self {
+            max_memory: 64 * 1024 * 1024,  // 64MB default
+            max_cpu_time: 30 * 1000,       // 30 seconds default
+            max_processes: 32,             // 32 processes default
+            max_files: 16,                 // 16 files default
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ProcessStats {
+    pub cpu_time_used: u64,    // CPU time used in milliseconds
+    pub memory_used: u64,       // Memory currently used in bytes
+    pub children_count: u32,    // Number of living children
+    pub files_opened: u32,     // Number of open files
+}
+
+impl Default for ProcessStats {
+    fn default() -> Self {
+        Self {
+            cpu_time_used: 0,
+            memory_used: 0,
+            children_count: 0,
+            files_opened: 0,
+        }
+    }
+}
+
 pub struct Process {
     pub id: u64,
     pub context_ptr: u64,
@@ -56,6 +124,12 @@ pub struct Process {
     pub parent_id: u64,
     pub children: alloc::vec::Vec<u64>,
     pub exit_code: i32,
+    pub priority: u8,           // Priority level (0-31, lower = higher priority)
+    pub resource_limits: ResourceLimits,
+    pub stats: ProcessStats,
+    pub process_group_id: u64,   // Process group ID
+    pub session_id: u64,         // Session ID
+    pub creation_time: u64,      // Process creation timestamp
 }
 
 impl Process {
@@ -90,6 +164,12 @@ impl Process {
             parent_id: 0,
             children: alloc::vec::Vec::new(),
             exit_code: 0,
+            priority: 10,  // Default priority (medium)
+            resource_limits: ResourceLimits::default(),
+            stats: ProcessStats::default(),
+            process_group_id: id,  // Initially, process is its own group leader
+            session_id: id,        // Initially, process is its own session leader
+            creation_time: get_current_time(),
         }
     }
 
@@ -105,6 +185,10 @@ impl Process {
         
         // Set parent-child relationship
         child.parent_id = self.id;
+        child.process_group_id = self.process_group_id;  // Inherit process group
+        child.session_id = self.session_id;              // Inherit session
+        child.priority = self.priority;                  // Inherit priority
+        child.resource_limits = self.resource_limits.clone(); // Inherit limits
         
         // Copy register state from parent
         let child_context = unsafe { &mut *(child.context_ptr as *mut Context) };
@@ -115,6 +199,177 @@ impl Process {
         child_context.rax = 0; // Child returns 0
         
         Ok(child)
+    }
+
+    /// Exit the current process with the given exit code
+    pub fn exit(&mut self, exit_code: i32) -> KernelResult<()> {
+        // Validate exit code
+        if exit_code < -255 || exit_code > 255 {
+            return kerror!(ProcessError::InvalidState);
+        }
+
+        // Set process state to Zombie
+        self.state = ProcessState::Zombie;
+        self.exit_code = exit_code;
+        
+        crate::println!("Process {} exiting with code {}", self.id, exit_code);
+        Ok(())
+    }
+
+    /// Wait for a child process to exit
+    pub fn wait(&mut self, child_pid: u64) -> KernelResult<i32> {
+        // Check if we have any children
+        if self.children.is_empty() {
+            return kerror!(ProcessError::NotFound);
+        }
+
+        // Look for zombie children
+        for &child_id in &self.children {
+            if child_pid == u64::MAX || child_id == child_pid {
+                // This would need to be implemented with scheduler integration
+                // For now, return a placeholder
+                return Ok(0);
+            }
+        }
+
+        // No zombie children found
+        kerror!(ProcessError::NotFound)
+    }
+
+    /// Join a process (wait for it to complete and get its exit code)
+    pub fn join(&mut self, target_pid: u64) -> KernelResult<i32> {
+        // Similar to wait but for any process, not just children
+        if self.state == ProcessState::Zombie && self.id == target_pid {
+            return Ok(self.exit_code);
+        }
+
+        // Block until target process exits
+        self.state = ProcessState::Waiting(WaitReason::Child(target_pid));
+        Ok(self.exit_code)
+    }
+
+    /// Check if the process can be safely terminated
+    pub fn can_terminate(&self) -> bool {
+        match self.state {
+            ProcessState::Running | ProcessState::Ready | ProcessState::Waiting(_) => true,
+            ProcessState::Zombie | ProcessState::Stopped => false,
+        }
+    }
+
+    /// Set process priority (0-31, lower = higher priority)
+    pub fn set_priority(&mut self, priority: u8) -> KernelResult<()> {
+        if priority > 31 {
+            return kerror!(ProcessError::InvalidState);
+        }
+        self.priority = priority;
+        Ok(())
+    }
+
+    /// Update resource limits
+    pub fn set_resource_limits(&mut self, limits: ResourceLimits) -> KernelResult<()> {
+        // Validate limits
+        if limits.max_memory == 0 || limits.max_cpu_time == 0 {
+            return kerror!(ProcessError::InvalidState);
+        }
+        self.resource_limits = limits;
+        Ok(())
+    }
+
+    /// Check if process has exceeded resource limits
+    pub fn check_resource_limits(&self) -> bool {
+        self.stats.memory_used <= self.resource_limits.max_memory &&
+        self.stats.cpu_time_used <= self.resource_limits.max_cpu_time &&
+        self.stats.children_count <= self.resource_limits.max_processes &&
+        self.stats.files_opened <= self.resource_limits.max_files
+    }
+
+    /// Add a child process to this process's children list
+    pub fn add_child(&mut self, child_pid: u64) -> KernelResult<()> {
+        if self.stats.children_count >= self.resource_limits.max_processes {
+            return kerror!(ProcessError::InvalidState);
+        }
+        
+        self.children.push(child_pid);
+        self.stats.children_count += 1;
+        Ok(())
+    }
+
+    /// Remove a child process from this process's children list
+    pub fn remove_child(&mut self, child_pid: u64) -> bool {
+        if let Some(pos) = self.children.iter().position(|&id| id == child_pid) {
+            self.children.remove(pos);
+            self.stats.children_count = self.stats.children_count.saturating_sub(1);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Make this process an orphan (parent has exited)
+    pub fn make_orphan(&mut self) {
+        self.parent_id = 0; // Init process (PID 0) becomes the new parent
+    }
+
+    /// Check if this process is an orphan
+    pub fn is_orphan(&self) -> bool {
+        self.parent_id == 0 && self.id != 0
+    }
+
+    /// Get process age in time units
+    pub fn get_age(&self) -> u64 {
+        get_current_time().saturating_sub(self.creation_time)
+    }
+
+    /// Update CPU usage statistics
+    pub fn update_cpu_usage(&mut self, cpu_time: u64) {
+        self.stats.cpu_time_used += cpu_time;
+    }
+
+    /// Update memory usage statistics
+    pub fn update_memory_usage(&mut self, memory_used: u64) {
+        self.stats.memory_used = memory_used;
+    }
+
+    /// Increment file open count
+    pub fn increment_file_count(&mut self) -> KernelResult<()> {
+        if self.stats.files_opened >= self.resource_limits.max_files {
+            return kerror!(ProcessError::InvalidState);
+        }
+        self.stats.files_opened += 1;
+        Ok(())
+    }
+
+    /// Decrement file open count
+    pub fn decrement_file_count(&mut self) {
+        self.stats.files_opened = self.stats.files_opened.saturating_sub(1);
+    }
+
+    /// Create a new process group with this process as leader
+    pub fn create_process_group(&mut self) -> KernelResult<u64> {
+        let new_pgid = allocate_pgid();
+        self.process_group_id = new_pgid;
+        Ok(new_pgid)
+    }
+
+    /// Join an existing process group
+    pub fn join_process_group(&mut self, pgid: u64) -> KernelResult<()> {
+        if pgid == 0 {
+            return kerror!(ProcessError::InvalidPid);
+        }
+        self.process_group_id = pgid;
+        Ok(())
+    }
+
+    /// Create a new session with this process as leader
+    pub fn create_session(&mut self) -> KernelResult<u64> {
+        // Only process group leaders can create sessions
+        if self.process_group_id != self.id {
+            return kerror!(ProcessError::InvalidState);
+        }
+        
+        let new_sid = allocate_sid();
+        self.session_id = new_sid;
+        Ok(new_sid)
     }
 }
 

@@ -84,7 +84,7 @@ fn validate_stack_pointer(stack_ptr: u64) -> bool {
 fn validate_syscall_number(syscall_number: u64) -> bool {
     // サポートされているシステムコール番号の範囲チェック
     match syscall_number {
-        0 | 1 | 2 | 3 | 4 | 24 | 39 | 57 | 60 | 61 => {
+        0 | 1 | 2 | 3 | 4 | 24 | 39 | 57 | 61 => {
             crate::println!("SECURITY: Valid syscall number: {}", syscall_number);
             true
         }
@@ -269,98 +269,43 @@ pub extern "C" fn rust_syscall_handler(stack_ptr: u64) -> u64 {
             use crate::process::scheduler::SCHEDULER;
             
             let mut sched = SCHEDULER.lock();
-            let child_pid = crate::process::allocate_pid();
-            
-            // 現在のプロセス情報を取得
-            let current_process = sched.get_process(current_pid)
-                .ok_or(-1i64 as u64); // Error if not found
-            
-            if current_process == -1i64 as u64 {
-                return -1i64 as u64; // Error: current process not found
-            }
-            
-            // 子プロセスを作成（同じエントリーポイントとスタックを使用）
-            // 注意：実際のforkではメモリ空間のコピーが必要だが、ここでは簡易実装
-            let mut child_process = current_process.clone();
-            child_process.id = child_pid;
-            child_process.parent_id = current_pid;
-            child_process.state = ProcessState::Ready;
-            
-            // 親プロセスに子を追加
-            for process in &mut sched.processes {
-                if process.id == current_pid {
-                    process.add_child(child_pid);
-                    break;
+            if let Some(parent_process) = sched.processes.front() {
+                if parent_process.id == current_pid {
+                    // Check resource limits before forking
+                    if !parent_process.check_resource_limits() {
+                        crate::println!("Fork failed: Parent process exceeded resource limits");
+                        return -1i64 as u64;
+                    }
+                    
+                    // Check if parent can create more children
+                    if parent_process.stats.children_count >= parent_process.resource_limits.max_processes {
+                        crate::println!("Fork failed: Parent process exceeded child limit");
+                        return -1i64 as u64;
+                    }
+                    
+                    // Safe PID allocation
+                    let child_pid = crate::process::allocate_pid();
+                    
+                    // Register parent-child relationship
+                    if let Err(_) = sched.register_child(current_pid, child_pid) {
+                        crate::println!("Fork failed: Could not register child");
+                        return -1i64 as u64;
+                    }
+                    
+                    crate::println!("Fork: Parent {} created child {}", current_pid, child_pid);
+                    child_pid as i64 // Parent returns child PID
+                } else {
+                    -1i64 // Error: process not found
                 }
+            } else {
+                -1i64 // Error: no current process
             }
-            
-            // 子プロセスをスケジューラーに追加
-            sched.add_process(child_process);
-            
-            crate::println!("Fork: Parent {} created child {}", current_pid, child_pid);
-            child_pid as i64 // Parent returns child PID, child returns 0
         }
         61 => {
             // wait4: Wait for child process to exit
             // Arguments: RDI=pid, RSI=status_ptr, RDX=options, R10=ru_ptr
             let target_pid = args.arg1;
             let status_ptr = args.arg2;
-            
-            crate::println!("Syscall: wait from PID {} for child {}", current_pid, target_pid);
-            
-            use crate::process::scheduler::SCHEDULER;
-            let mut sched = SCHEDULER.lock();
-            
-            // 現在のプロセスを待機状態に設定
-            sched.set_process_state(current_pid, ProcessState::Waiting(WaitReason::Child(target_pid)));
-            
-            // 子プロセスがすでに終了しているかチェック
-            if let Some(child_process) = sched.get_process(target_pid) {
-                if child_process.is_terminated() {
-                    // 子プロセスが終了している場合、ステータスを戻し終了コードを返す
-                    sched.set_process_state(current_pid, ProcessState::Ready);
-                    
-                    // ステータスポインタに終了コードを書き込み
-                    if status_ptr != 0 {
-                        unsafe {
-                            let status_ptr = status_ptr as *mut i32;
-                            *status_ptr = child_process.exit_code;
-                        }
-                    }
-                    
-                    child_process.exit_code as i64
-                } else {
-                    // 子プロセスがまだ終了していない場合、-1を返す（ECHILD）
-                    -1i64
-                }
-            } else {
-                // 子プロセスが存在しない場合、-1を返す（ECHILD）
-                -1i64
-            }
-        }
-        
-        60 => {
-            // exit: Terminate current process
-            let exit_code = args.arg1 as i32;
-            crate::println!("Syscall: exit from PID {} with code {}", current_pid, exit_code);
-            
-            use crate::process::scheduler::SCHEDULER;
-            let mut sched = SCHEDULER.lock();
-            
-            // プロセスを終了状態に設定
-            if let Some(process) = sched.process_map.get_mut(&current_pid) {
-                let _ = process.exit(exit_code);
-            }
-            
-            // 現在のプロセスをスケジューリングから削除し、アイドル状態へ
-            sched.current_process = None;
-            unsafe {
-                crate::syscall::CPU_DATA.current_process_id = 0;
-            }
-            
-            // 終了したプロセスは再スケジューリングされない
-            0i64 // 成功
-        }
             let options = args.arg3;
             
             // セキュリティ：引数の検証
@@ -390,38 +335,35 @@ pub extern "C" fn rust_syscall_handler(stack_ptr: u64) -> u64 {
             
             let mut sched = SCHEDULER.lock();
             
-            // Find zombie children
-            let mut zombie_child = None;
-            for process in &sched.processes {
-                if process.parent_id == current_pid && process.state == ProcessState::Zombie {
-                    if target_pid == -1i64 as u64 || process.id == target_pid {
-                        zombie_child = Some(process.id);
-                        break;
-                    }
-                }
-            }
+            // Use enhanced scheduler to find zombie children
+            let zombie_children = sched.find_zombie_children(current_pid);
+            let target_child = if target_pid == -1i64 as u64 {
+                // Any child
+                zombie_children.first().copied().unwrap_or(0)
+            } else {
+                // Specific child
+                zombie_children.iter().find(|&&pid| pid == target_pid).copied().unwrap_or(0)
+            };
             
-            if let Some(child_pid) = zombie_child {
-                // Remove zombie child and get exit code
-                let mut exit_code = 0;
-                sched.processes.retain(|p| {
-                    if p.id == child_pid {
-                        exit_code = p.exit_code;
-                        false // Remove from scheduler
-                    } else {
-                        true // Keep in scheduler
+            if target_child != 0 {
+                // Reap the zombie child
+                match sched.reap_zombie_child(current_pid, target_child) {
+                    Ok(exit_code) => {
+                        // Write exit code to status pointer if provided
+                        if status_ptr != 0 {
+                            unsafe {
+                                *(status_ptr as *mut i32) = exit_code;
+                            }
+                        }
+                        
+                        crate::println!("Wait4: PID {} reaped child {} with exit code {}", current_pid, target_child, exit_code);
+                        target_child as i64
                     }
-                });
-                
-                // Write exit code to status pointer if provided
-                if status_ptr != 0 {
-                    unsafe {
-                        *(status_ptr as *mut i32) = exit_code;
+                    Err(_) => {
+                        crate::println!("Wait4: PID {} failed to reap child {}", current_pid, target_child);
+                        -1i64
                     }
                 }
-                
-                crate::println!("Wait4: PID {} reaped child {} with exit code {}", current_pid, child_pid, exit_code);
-                child_pid as i64
             } else {
                 // No zombie children available - properly block current process
                 if let Some(current_process) = sched.processes.front_mut() {
@@ -482,28 +424,13 @@ pub extern "C" fn rust_syscall_handler(stack_ptr: u64) -> u64 {
             crate::println!("Syscall: sys_exit from PID {} with code {}", current_pid, exit_code);
             
             use crate::process::scheduler::SCHEDULER;
-            use crate::process::{ProcessState, WaitReason};
             
             let mut sched = SCHEDULER.lock();
             
-            // Find the exiting process and set it to Zombie state
-            for process in &mut sched.processes {
-                if process.id == current_pid {
-                    process.state = ProcessState::Zombie;
-                    process.exit_code = exit_code;
-                    crate::println!("Process {} entered Zombie state with exit code {}", current_pid, exit_code);
-                    break;
-                }
-            }
-            
-            // Wake up parent if it's waiting for this child
-            for process in &mut sched.processes {
-                if let ProcessState::Waiting(WaitReason::Child(waiting_pid)) = process.state {
-                    if waiting_pid == current_pid || waiting_pid == -1i64 as u64 {
-                        process.state = ProcessState::Ready;
-                        crate::println!("Woke up parent {} from waiting for child {}", process.id, current_pid);
-                    }
-                }
+            // Use enhanced scheduler to handle process exit
+            if let Err(_) = sched.handle_process_exit(current_pid, exit_code) {
+                crate::println!("Exit: Failed to handle exit for PID {}", current_pid);
+                return -1i64 as u64;
             }
             
             // Don't remove from scheduler immediately - let parent reap it
