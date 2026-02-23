@@ -196,7 +196,7 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(
 
     let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
-    crate::task::keyboard::add_scancode(scancode);
+    crate::process::add_keyboard_scancode(scancode);
 
     unsafe {
         PICS.lock()

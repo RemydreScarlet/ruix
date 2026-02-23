@@ -15,8 +15,8 @@ pub mod gdt;
 // メモリ管理
 pub mod memory;
 pub mod allocator;
-// マルチタスク
-pub mod task;
+// 統合タスク管理 (process + async task)
+pub mod process;
 // システムコール
 pub mod syscall;
 // タイマー
@@ -25,8 +25,6 @@ pub mod timer;
 pub mod serial;
 // IPC (プロセス間通信)
 pub mod ipc;
-
-pub mod process;
 
 // 新しいスケーラブルなサブシステム
 pub mod error;

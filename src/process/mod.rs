@@ -4,8 +4,18 @@ use lazy_static::lazy_static;
 use crate::error::{KernelError, ProcessError};
 use crate::error::KernelResult;
 use crate::kerror;
+use core::{future::Future, pin::Pin, task::{Context, Poll}};
+use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
+use crossbeam_queue::ArrayQueue;
+use alloc::task::Wake;
+use conquer_once::spin::OnceCell;
+use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
+use futures_util::task::AtomicWaker;
+use futures_util::stream::{Stream, StreamExt};
 
 pub mod scheduler;
+
+pub const DEFAULT_PRIORITY: u8 = 10;
 
 lazy_static! {
     static ref NEXT_PID: Mutex<u64> = Mutex::new(1);
@@ -59,11 +69,44 @@ pub enum WaitReason {
     IpcReceive(u64),
     IpcSend(u64),
     Sleep(u64),
+    AsyncPoll,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TaskType {
+    Process,
+    Async,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TaskId(u64);
+
+impl TaskId {
+    pub fn new() -> Self {
+        static NEXT_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        TaskId(NEXT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed))
+    }
+    
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+}
+
+pub trait TaskBehavior {
+    fn get_id(&self) -> u64;
+    fn get_task_type(&self) -> TaskType;
+    fn get_state(&self) -> ProcessState;
+    fn set_state(&mut self, state: ProcessState);
+    fn get_priority(&self) -> u8;
+    fn set_priority(&mut self, priority: u8) -> KernelResult<()>;
+    fn can_schedule(&self) -> bool;
+    fn poll_task(&mut self) -> Poll<()>;
+    fn wake_task(&mut self);
 }
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-pub struct Context {
+pub struct ProcessContext {
     // 汎用レジスタ (アセンブリの pop r15...rax の順順)
     r15: u64, r14: u64, r13: u64, r12: u64,
     rbp: u64, rbx: u64, r11: u64, r10: u64,
@@ -76,6 +119,30 @@ pub struct Context {
     rflags: u64,
     rsp: u64,
     ss: u64,
+}
+
+pub struct AsyncTask {
+    id: TaskId,
+    future: Pin<Box<dyn Future<Output = ()> + Send>>,
+    state: ProcessState,
+    priority: u8,
+    waker_cache: BTreeMap<TaskId, core::task::Waker>,
+}
+
+impl AsyncTask {
+    pub fn new(future: impl Future<Output = ()> + Send + 'static) -> Self {
+        Self {
+            id: TaskId::new(),
+            future: Box::pin(future),
+            state: ProcessState::Ready,
+            priority: DEFAULT_PRIORITY,
+            waker_cache: BTreeMap::new(),
+        }
+    }
+    
+    pub fn poll(&mut self, context: &mut core::task::Context) -> Poll<()> {
+        self.future.as_mut().poll(context)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -134,15 +201,15 @@ pub struct Process {
 
 impl Process {
     pub fn new(id: u64, entry_point: u64, stack_top: u64, mapper: &mut OffsetPageTable, frame_allocator: &mut impl FrameAllocator<Size4KiB>) -> Self {
-        // 1. Context構造体のサイズ分だけスタックの「下」を指す
-        let context_ptr = (stack_top - core::mem::size_of::<Context>() as u64) as *mut Context;
+        // 1. ProcessContext構造体のサイズ分だけスタックの「下」を指す
+        let context_ptr = (stack_top - core::mem::size_of::<ProcessContext>() as u64) as *mut ProcessContext;
 
         // 2. プロセス固有のページテーブルを作成
         let page_table_frame = create_process_page_table_with_user_mappings(mapper, frame_allocator);
 
         unsafe {
             // 3. その場所に初期値を書き込む
-            (*context_ptr) = Context {
+            (*context_ptr) = ProcessContext {
                 r15: 0, r14: 0, r13: 0, r12: 0,
                 rbp: 0, rbx: 0,
                 r11: 0, r10: 0, r9: 0, r8: 0,
@@ -164,7 +231,7 @@ impl Process {
             parent_id: 0,
             children: alloc::vec::Vec::new(),
             exit_code: 0,
-            priority: 10,  // Default priority (medium)
+            priority: DEFAULT_PRIORITY,  // Default priority (medium)
             resource_limits: ResourceLimits::default(),
             stats: ProcessStats::default(),
             process_group_id: id,  // Initially, process is its own group leader
@@ -178,7 +245,7 @@ impl Process {
         let child_pid = allocate_pid();
         
         // Copy the current context (registers will be set after fork)
-        let current_context = unsafe { &*(self.context_ptr as *const Context) };
+        let current_context = unsafe { &*(self.context_ptr as *const ProcessContext) };
         
         // Create child process with same entry point and stack
         let mut child = Self::new(child_pid, current_context.rip, current_context.rsp, mapper, frame_allocator);
@@ -191,7 +258,7 @@ impl Process {
         child.resource_limits = self.resource_limits.clone(); // Inherit limits
         
         // Copy register state from parent
-        let child_context = unsafe { &mut *(child.context_ptr as *mut Context) };
+        let child_context = unsafe { &mut *(child.context_ptr as *mut ProcessContext) };
         *child_context = current_context.clone();
         
         // Set return values:
@@ -373,6 +440,194 @@ impl Process {
     }
 }
 
+impl TaskBehavior for Process {
+    fn get_id(&self) -> u64 {
+        self.id
+    }
+    
+    fn get_task_type(&self) -> TaskType {
+        TaskType::Process
+    }
+    
+    fn get_state(&self) -> ProcessState {
+        self.state
+    }
+    
+    fn set_state(&mut self, state: ProcessState) {
+        self.state = state;
+    }
+    
+    fn get_priority(&self) -> u8 {
+        self.priority
+    }
+    
+    fn set_priority(&mut self, priority: u8) -> KernelResult<()> {
+        self.set_priority(priority)
+    }
+    
+    fn can_schedule(&self) -> bool {
+        matches!(self.state, ProcessState::Ready | ProcessState::Running)
+    }
+    
+    fn poll_task(&mut self) -> Poll<()> {
+        // Processes are always "ready" for scheduling purposes
+        Poll::Ready(())
+    }
+    
+    fn wake_task(&mut self) {
+        if matches!(self.state, ProcessState::Waiting(_)) {
+            self.state = ProcessState::Ready;
+        }
+    }
+}
+
+impl TaskBehavior for AsyncTask {
+    fn get_id(&self) -> u64 {
+        self.id.as_u64()
+    }
+    
+    fn get_task_type(&self) -> TaskType {
+        TaskType::Async
+    }
+    
+    fn get_state(&self) -> ProcessState {
+        self.state
+    }
+    
+    fn set_state(&mut self, state: ProcessState) {
+        self.state = state;
+    }
+    
+    fn get_priority(&self) -> u8 {
+        self.priority
+    }
+    
+    fn set_priority(&mut self, priority: u8) -> KernelResult<()> {
+        if priority > 31 {
+            return kerror!(ProcessError::InvalidState);
+        }
+        self.priority = priority;
+        Ok(())
+    }
+    
+    fn can_schedule(&self) -> bool {
+        matches!(self.state, ProcessState::Ready)
+    }
+    
+    fn poll_task(&mut self) -> Poll<()> {
+        // For now, return Ready to indicate the task can be scheduled
+        // In a full implementation, this would do actual async polling
+        if matches!(self.state, ProcessState::Ready) {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+    
+    fn wake_task(&mut self) {
+        self.state = ProcessState::Ready;
+    }
+}
+
+struct TaskWaker {
+    task_id: TaskId,
+    task_queue: Arc<ArrayQueue<TaskId>>,
+}
+
+impl TaskWaker {
+    fn wake_task(&self) {
+        if let Err(_) = self.task_queue.push(self.task_id) {
+            crate::println!("WARNING: async task queue full");
+        }
+    }
+    
+    fn new(task_id: TaskId, task_queue: Arc<ArrayQueue<TaskId>>) -> core::task::Waker {
+        core::task::Waker::from(Arc::new(TaskWaker {
+            task_id,
+            task_queue,
+        }))
+    }
+}
+
+impl Wake for TaskWaker {
+    fn wake(self: Arc<Self>) {
+        self.wake_task();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.wake_task();
+    }
+}
+
+// Keyboard task functionality integrated from task module
+static SCANCODE_QUEUE: OnceCell<ArrayQueue<u8>> = OnceCell::uninit();
+static KEYBOARD_WAKER: AtomicWaker = AtomicWaker::new();
+
+// Keyboard interrupt handler integration
+pub fn add_keyboard_scancode(scancode: u8) {
+    if let Ok(queue) = SCANCODE_QUEUE.try_get() {
+        if let Err(_) = queue.push(scancode) {
+            crate::println!("WARNING: scancode queue full; dropping keyboard input");
+        } else {
+            KEYBOARD_WAKER.wake();
+        }
+    } else {
+        crate::println!("WARNING: scancode queue uninitialized");
+    }
+}
+
+pub struct KeyboardScancodeStream {
+    _private: (),
+}
+
+impl KeyboardScancodeStream {
+    pub fn new() -> Self {
+        SCANCODE_QUEUE.try_init_once(|| ArrayQueue::new(100))
+            .expect("KeyboardScancodeStream::new should only be called once");
+        KeyboardScancodeStream { _private: () }
+    }
+}
+
+impl Stream for KeyboardScancodeStream {
+    type Item = u8;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut core::task::Context) -> Poll<Option<u8>> {
+        let queue = SCANCODE_QUEUE
+            .try_get()
+            .expect("scancode queue not initialized");
+
+        if let Ok(scancode) = queue.pop() {
+            return Poll::Ready(Some(scancode));
+        }
+
+        KEYBOARD_WAKER.register(cx.waker());
+        match queue.pop() {
+            Ok(scancode) => {
+                KEYBOARD_WAKER.take();
+                Poll::Ready(Some(scancode))
+            }
+            Err(_) => Poll::Pending,
+        }
+    }
+}
+
+pub async fn process_keyboard_input() {
+    let mut scancodes = KeyboardScancodeStream::new();
+    let mut keyboard = Keyboard::new(ScancodeSet1::new(),
+        layouts::Us104Key, HandleControl::Ignore);
+
+    while let Some(scancode) = scancodes.next().await {
+        if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
+            if let Some(key) = keyboard.process_keyevent(key_event) {
+                match key {
+                    DecodedKey::Unicode(character) => crate::print!("{}", character),
+                    DecodedKey::RawKey(key) => crate::println!("{:?}", key),
+                }
+            }
+        }
+    }
+}
+
 // プロセス固有のページテーブルを作成し、ユーザー空間のマッピングをコピーする関数
 fn create_process_page_table_with_user_mappings(mapper: &mut OffsetPageTable, frame_allocator: &mut impl FrameAllocator<Size4KiB>) -> PhysFrame {
     use x86_64::structures::paging::PageTable;
@@ -409,7 +664,7 @@ pub extern "C" fn handle_switch(current_context_ptr: u64) -> u64 {
         master_pic_port.write(0x20u8); // 0x20 は EOI (End of Interrupt) コマンド
     }
 
-    let ctx = unsafe { &*(current_context_ptr as *const Context) };
+    let ctx = unsafe { &*(current_context_ptr as *const ProcessContext) };
 
     // この ctx.rsp こそが、ユーザーモードで動いていた時のRSPです！
     // Task 1 なら 0x601000 付近、Task 2 なら staticなSTACKのアドレスが出るはず

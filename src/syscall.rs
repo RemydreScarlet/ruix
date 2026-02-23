@@ -84,7 +84,7 @@ fn validate_stack_pointer(stack_ptr: u64) -> bool {
 fn validate_syscall_number(syscall_number: u64) -> bool {
     // サポートされているシステムコール番号の範囲チェック
     match syscall_number {
-        0 | 1 | 2 | 3 | 4 | 24 | 39 | 57 | 61 => {
+        0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 24 | 39 | 57 | 61 => {
             crate::println!("SECURITY: Valid syscall number: {}", syscall_number);
             true
         }
@@ -588,6 +588,101 @@ pub extern "C" fn rust_syscall_handler(stack_ptr: u64) -> u64 {
                 }
                 Err(_) => {
                     crate::println!("IPC: Message receive failed");
+                    -1i64 // エラー
+                }
+            }
+        }
+        5 => {
+            // sys_create_memory_handle: メモリハンドル作成
+            // 引数: RDI=start_addr, RSI=size, RDX=rights, R10=mode
+            let start_addr = x86_64::VirtAddr::new(args.arg1);
+            let size = args.arg2 as usize;
+            let rights = match args.arg3 {
+                0 => crate::ipc::AccessRights::ReadOnly,
+                1 => crate::ipc::AccessRights::ReadWrite,
+                2 => crate::ipc::AccessRights::Execute,
+                _ => {
+                    crate::println!("SECURITY: Invalid access rights: {}", args.arg3);
+                    return -1i64 as u64;
+                }
+            };
+            let mode = match args.arg4 {
+                0 => crate::ipc::TransferMode::Ownership,
+                1 => crate::ipc::TransferMode::Shared,
+                2 => crate::ipc::TransferMode::Exclusive,
+                _ => {
+                    crate::println!("SECURITY: Invalid transfer mode: {}", args.arg4);
+                    return -1i64 as u64;
+                }
+            };
+            
+            // セキュリティ：アドレス範囲の検証
+            if let Err(err) = validate_user_pointer(args.arg1, size) {
+                crate::println!("SECURITY: Invalid memory range in create_memory_handle: {:?}", err);
+                return -1i64 as u64;
+            }
+            
+            crate::println!("MEMORY IPC: Process {} creating handle for addr {:#x}, size {}", current_pid, start_addr, size);
+            match crate::ipc::syscalls::create_memory_handle(start_addr, size, rights, mode) {
+                Ok(handle_id) => {
+                    crate::println!("MEMORY IPC: Handle {} created successfully", handle_id);
+                    handle_id as i64
+                }
+                Err(_) => {
+                    crate::println!("MEMORY IPC: Handle creation failed");
+                    -1i64 // エラー
+                }
+            }
+        }
+        6 => {
+            // sys_transfer_memory: メモリハンドル転送
+            // 引数: RDI=handle_id, RSI=target_pid
+            let handle_id = args.arg1;
+            let target_pid = args.arg2;
+            
+            // セキュリティ：引数の検証
+            if handle_id == 0 {
+                crate::println!("SECURITY: Invalid handle ID for transfer_memory: {}", handle_id);
+                return -1i64 as u64;
+            }
+            
+            if target_pid == 0 || target_pid > 10000 {
+                crate::println!("SECURITY: Invalid target PID for transfer_memory: {}", target_pid);
+                return -1i64 as u64;
+            }
+            
+            crate::println!("MEMORY IPC: Process {} transferring handle {} to PID {}", current_pid, handle_id, target_pid);
+            match crate::ipc::syscalls::transfer_memory(handle_id, target_pid) {
+                Ok(()) => {
+                    crate::println!("MEMORY IPC: Handle {} transferred successfully", handle_id);
+                    0i64 // 成功
+                }
+                Err(_) => {
+                    crate::println!("MEMORY IPC: Handle {} transfer failed", handle_id);
+                    -1i64 // エラー
+                }
+            }
+        }
+        7 => {
+            // sys_receive_memory_handle: メモリハンドル受信
+            // 引数: RDI=handle_id
+            let handle_id = args.arg1;
+            
+            // セキュリティ：引数の検証
+            if handle_id == 0 {
+                crate::println!("SECURITY: Invalid handle ID for receive_memory_handle: {}", handle_id);
+                return -1i64 as u64;
+            }
+            
+            crate::println!("MEMORY IPC: Process {} receiving handle {}", current_pid, handle_id);
+            match crate::ipc::syscalls::receive_memory_handle(handle_id) {
+                Ok(range) => {
+                    crate::println!("MEMORY IPC: Handle {} received successfully, range {:#x}-{:#x}", 
+                        handle_id, range.start_addr, range.start_addr + range.size);
+                    0i64 // 成功
+                }
+                Err(_) => {
+                    crate::println!("MEMORY IPC: Handle {} receive failed", handle_id);
                     -1i64 // エラー
                 }
             }

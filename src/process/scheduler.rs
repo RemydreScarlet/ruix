@@ -1,10 +1,11 @@
 use alloc::collections::VecDeque;
 use spin::Mutex;
-use super::{Process, ProcessState, WaitReason};
+use super::{Process, ProcessState, WaitReason, TaskBehavior, TaskType, AsyncTask};
 use crate::error::{KernelError, ProcessError};
 use crate::error::KernelResult;
 use crate::kerror;
 use lazy_static::lazy_static;
+use alloc::boxed::Box;
 
 /// Priority levels (0-31, lower = higher priority)
 pub const MAX_PRIORITY: u8 = 0;
@@ -13,17 +14,21 @@ pub const DEFAULT_PRIORITY: u8 = 10;
 
 pub struct Scheduler {
     pub processes: VecDeque<Process>,
+    pub async_tasks: VecDeque<AsyncTask>,
     process_tree: alloc::collections::BTreeMap<u64, u64>, // PID -> parent PID mapping
     orphans: alloc::vec::Vec<u64>, // List of orphaned process IDs
     current_priority: u8, // Current priority being scheduled
+    task_queue: alloc::collections::VecDeque<u64>, // Unified task queue for scheduling
 }
 
 lazy_static! {
     pub static ref SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler {
         processes: VecDeque::new(),
+        async_tasks: VecDeque::new(),
         process_tree: alloc::collections::BTreeMap::new(),
         orphans: alloc::vec::Vec::new(),
         current_priority: DEFAULT_PRIORITY,
+        task_queue: alloc::collections::VecDeque::new(),
     });
 }
 
@@ -40,6 +45,11 @@ impl Scheduler {
         // Add to main processes list
         self.processes.push_back(process);
     }
+    
+    pub fn add_async_task(&mut self, task: AsyncTask) {
+        self.task_queue.push_back(task.get_id());
+        self.async_tasks.push_back(task);
+    }
 
     /// Get next process based on priority scheduling
     fn get_next_process_by_priority(&mut self) -> Option<u64> {
@@ -48,6 +58,31 @@ impl Scheduler {
             if matches!(process.state, ProcessState::Ready | ProcessState::Running) {
                 return Some(process.id);
             }
+        }
+        
+        None
+    }
+    
+    /// Get next async task that's ready to run
+    fn get_next_async_task(&mut self) -> Option<u64> {
+        for task in &mut self.async_tasks {
+            if task.can_schedule() {
+                return Some(task.get_id());
+            }
+        }
+        None
+    }
+    
+    /// Get next task (process or async) for scheduling
+    fn get_next_task(&mut self) -> Option<(u64, TaskType)> {
+        // First try to find a ready process
+        if let Some(pid) = self.get_next_process_by_priority() {
+            return Some((pid, TaskType::Process));
+        }
+        
+        // Then try to find a ready async task
+        if let Some(task_id) = self.get_next_async_task() {
+            return Some((task_id, TaskType::Async));
         }
         
         None
