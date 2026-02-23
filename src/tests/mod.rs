@@ -7,7 +7,12 @@ use crate::error::KernelResult;
 use crate::memory::scalable;
 use crate::cpu;
 use alloc::vec::Vec;
-use alloc::string::ToString;
+use alloc::string::{String, ToString};
+use alloc::format;
+use alloc::vec;
+use x86_64::VirtAddr;
+
+pub mod ipc_tests;
 
 /// Create all test suites
 pub fn create_all_test_suites() -> Vec<TestSuite> {
@@ -16,6 +21,7 @@ pub fn create_all_test_suites() -> Vec<TestSuite> {
         create_cpu_tests(),
         create_error_tests(),
         create_integration_tests(),
+        create_ipc_tests(),
     ]
 }
 
@@ -61,7 +67,7 @@ fn test_simple_allocation() -> TestResult {
     let addr = scalable::allocate_simple(size)?;
     
     // Verify the allocation
-    crate::assert_true!(addr.is_not_null());
+    crate::assert_true!(!addr.is_null());
     
     // Free the memory
     scalable::free(addr, size)?;
@@ -95,6 +101,7 @@ fn test_allocation_with_flags() -> TestResult {
 fn test_memory_statistics() -> TestResult {
     // Get initial statistics
     let initial_stats = scalable::get_memory_stats();
+    let initial_total = initial_stats.total_allocated;
     
     // Allocate some memory
     let size = 4096;
@@ -242,7 +249,7 @@ fn test_memory_cpu_integration() -> TestResult {
     let addr = scalable::allocate_simple(size)?;
     
     // Verify allocation succeeded
-    crate::assert_true!(addr.is_not_null());
+    crate::assert_true!(!addr.is_null());
     
     // Check that CPU state is still valid
     let current_cpu = cpu::current_cpu()?;
@@ -336,13 +343,14 @@ pub fn create_stress_tests() -> TestSuite {
 }
 
 fn test_memory_stress() -> TestResult {
-    let allocations = Vec::new();
+    let mut allocations: Vec<x86_64::VirtAddr> = Vec::new();
     
     // Try to allocate a lot of small blocks
     for i in 0..100 {
         let size = 1024 * (i + 1); // Increasing sizes
         match scalable::allocate_simple(size) {
             Ok(addr) => {
+                allocations.push(addr); // Store the allocation
                 // In a real implementation, you'd store these for cleanup
                 scalable::free(addr, size)?;
             }
@@ -377,4 +385,13 @@ fn test_cpu_stress() -> TestResult {
     crate::assert_false!(cpu.in_interrupt());
     
     Ok(())
+}
+
+/// IPC tests
+fn create_ipc_tests() -> TestSuite {
+    TestSuite::new("IPC System", "Tests for Inter-Process Communication", TestCategory::Ipc)
+        .add_test(TestCase::new("ipc_boot_sequence", "Test IPC boot sequence", TestCategory::Integration, crate::tests::ipc_tests::test_ipc_boot_sequence))
+        .add_test(TestCase::new("ipc_cleanup", "Test IPC cleanup functionality", TestCategory::Integration, crate::tests::ipc_tests::test_ipc_cleanup))
+        .add_test(TestCase::new("page_table_ops", "Test page table operations", TestCategory::Integration, crate::tests::ipc_tests::test_page_table_ops))
+        .add_test(TestCase::new("all_ipc_tests", "Run all IPC tests", TestCategory::System, crate::tests::ipc_tests::run_all_ipc_tests))
 }

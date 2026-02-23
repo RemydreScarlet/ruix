@@ -44,7 +44,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     use ruix::memory::{self, BootInfoFrameAllocator};
     use ruix::allocator;
     use x86_64::{structures::paging::FrameAllocator, VirtAddr};
-    println!("Starting Ruix 0.1");
+    println!("Starting Ruix 0.1 - Boot Check Mode");
     
     // 割り込みの初期化（タイマーはまだ開始しない）
     ruix::interrupts::init_idt();
@@ -62,6 +62,24 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     allocator::init_heap(&mut mapper, &mut frame_allocator)
         .expect("heap initialization failed");
+    
+    println!("Heap initialized - Running boot checks...");
+    
+    // ブートチェックの実行
+    let boot_checker = match ruix::testing::run_boot_checks() {
+        Ok(checker) => checker,
+        Err(e) => {
+            println!("Boot check initialization failed: {:?}", e);
+            ruix::hlt_loop();
+        }
+    };
+    
+    if !boot_checker.all_passed() {
+        println!("BOOT CHECK FAILED - Halting");
+        ruix::hlt_loop();
+    }
+    
+    println!("All boot checks passed - Starting IPC implementation");
     
 
     // ユーザー空間の構築 - プロセス作成より先に！

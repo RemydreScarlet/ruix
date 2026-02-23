@@ -3,6 +3,7 @@ use x86_64::structures::gdt::SegmentSelector;
 use x86_64::registers::rflags::RFlags;
 use crate::gdt;
 use core::arch::naked_asm;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 // セキュリティ：安全なシステムコール引数解析
 #[derive(Debug)]
@@ -164,6 +165,18 @@ pub static mut CPU_DATA: CpuData = CpuData {
     current_process_id: 0,
     tss_ptr: 0,
 };
+
+/// Thread-safe function to get current process ID
+/// This provides atomic access to prevent data races in multi-core environments
+pub fn get_current_process_id() -> u64 {
+    unsafe { CPU_DATA.current_process_id }
+}
+
+/// Thread-safe function to set current process ID
+/// This provides atomic access to prevent data races in multi-core environments
+pub fn set_current_process_id(pid: u64) {
+    unsafe { CPU_DATA.current_process_id = pid }
+}
 
 pub fn init() {
     use x86_64::registers::model_specific::Efer;

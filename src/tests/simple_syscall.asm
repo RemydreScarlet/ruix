@@ -9,8 +9,8 @@ _start:
     
     # Print result
     mov rdi, 1        # stdout
-    mov rsi, test_msg
-    mov rdx, test_msg_len
+    mov rsi, syscall_test_msg
+    mov rdx, syscall_test_msg_len
     syscall
     
     # Test exit
@@ -22,4 +22,4 @@ _start:
     jmp $
 
 .section .rodata
-test_msg: .asciz "Test getpid syscall - PID: "
+syscall_test_msg: .asciz "Test getpid syscall - PID: "

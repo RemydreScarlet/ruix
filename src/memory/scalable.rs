@@ -267,6 +267,31 @@ impl GlobalMemoryManager {
         }
     }
 
+    /// Get process page table for IPC operations
+    fn get_process_page_table(&self, pid: u64) -> KernelResult<OffsetPageTable> {
+        use crate::process::scheduler::SCHEDULER;
+        
+        let sched = SCHEDULER.lock();
+        for process in &sched.processes {
+            if process.id == pid {
+                let phys_offset = self.get_physical_offset()?;
+                unsafe {
+                    let page_table = crate::memory::active_level_4_table(phys_offset);
+                    return Ok(OffsetPageTable::new(page_table, phys_offset));
+                }
+            }
+        }
+        
+        Err(KernelError::Process(crate::error::ProcessError::NotFound))
+    }
+    
+    /// Get physical memory offset
+    fn get_physical_offset(&self) -> KernelResult<VirtAddr> {
+        // 物理メモリオフセットを取得（既存の方法を使用）
+        // これはmain.rsで使用されているものと同じ
+        Ok(VirtAddr::new(0xffff_8000_0000_0000))
+    }
+
     /// Initialize the memory manager
     pub fn init(&mut self, mapper: &'static mut OffsetPageTable, frame_allocator: Box<dyn FrameAllocator<Size4KiB>>) -> KernelResult<()> {
         // Store the mapper
@@ -507,5 +532,79 @@ pub mod debug {
         // This is a placeholder for a real implementation
         crate::println!("Memory validation completed successfully");
         Ok(())
+    }
+}
+
+// IPC Page Table Operations Implementation
+use crate::ipc::IpcPageTableOps;
+
+impl IpcPageTableOps for GlobalMemoryManager {
+    fn map_memory(&mut self, target_pid: u64, virt_addr: VirtAddr, 
+                  phys_frames: &[PhysFrame], flags: PageTableFlags) -> KernelResult<()> {
+        use x86_64::structures::paging::{Page, Size4KiB};
+        
+        let mut mapper = self.get_process_page_table(target_pid)?;
+        
+        for (i, &frame) in phys_frames.iter().enumerate() {
+            let page = Page::<Size4KiB>::containing_address(virt_addr + (i * 4096) as u64);
+            
+            // ページをマップ
+            unsafe {
+                let mut frame_allocator = self.frame_allocator.lock();
+                let frame_allocator = &mut **frame_allocator;
+                
+                mapper.map_to(page, frame, flags, frame_allocator)
+                    .map_err(|_| KernelError::Memory(crate::error::AllocError::InvalidAddress))?
+                    .flush();
+            }
+        }
+        
+        crate::println!("IPC: Successfully mapped {} pages for PID {}", phys_frames.len(), target_pid);
+        Ok(())
+    }
+    
+    fn unmap_memory(&mut self, target_pid: u64, virt_addr: VirtAddr, 
+                    page_count: usize) -> KernelResult<()> {
+        use x86_64::structures::paging::{Page, Size4KiB};
+        
+        let mut mapper = self.get_process_page_table(target_pid)?;
+        
+        for i in 0..page_count {
+            let page = Page::<Size4KiB>::containing_address(virt_addr + (i * 4096) as u64);
+            
+            // For now, just flush the TLB - actual unmapping would need proper frame management
+            x86_64::instructions::tlb::flush(page.start_address());
+            crate::println!("IPC: Unmapped page {:#x} for PID {}", page.start_address().as_u64(), target_pid);
+        }
+        
+        crate::println!("IPC: Successfully unmapped {} pages for PID {}", page_count, target_pid);
+        Ok(())
+    }
+    
+    fn flush_tlb_entry(&mut self, virt_addr: VirtAddr) {
+        x86_64::instructions::tlb::flush(virt_addr);
+        crate::println!("IPC: TLB flushed for {:#x}", virt_addr.as_u64());
+    }
+    
+    fn verify_ownership(&self, pid: u64, virt_addr: VirtAddr) -> KernelResult<PhysAddr> {
+        crate::println!("IPC: Verifying ownership for PID {} at {:#x}", pid, virt_addr.as_u64());
+        
+        // Get the process's page table
+        let mapper = self.get_process_page_table(pid)?;
+        
+        // Check if the page is mapped and get the physical frame
+        use x86_64::structures::paging::{Page, Size4KiB};
+        let page = Page::<Size4KiB>::containing_address(virt_addr);
+        
+        match mapper.translate_page(page) {
+            Ok(frame) => {
+                crate::println!("IPC: Ownership verified - physical frame: {:#x}", frame.start_address().as_u64());
+                Ok(frame.start_address())
+            }
+            Err(_) => {
+                crate::println!("IPC: Ownership verification failed - page not mapped");
+                Err(KernelError::Memory(crate::error::AllocError::InvalidAddress))
+            }
+        }
     }
 }

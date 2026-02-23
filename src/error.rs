@@ -137,6 +137,28 @@ pub enum IpcError {
     InvalidChannelId,
     /// Connection refused
     ConnectionRefused,
+    /// Sender is not an endpoint of the channel
+    InvalidSender,
+    /// Channel message queue is full
+    ChannelFull,
+    /// Memory handle not found in registry
+    HandleNotFound,
+    /// Memory range is invalid (not page-aligned)
+    InvalidRange,
+    /// Access denied (permission check failed)
+    AccessDenied,
+    /// Memory transfer operation failed
+    TransferFailed,
+    /// Page table mapping failed
+    MappingFailed,
+    /// Page table unmapping failed
+    UnmappingFailed,
+    /// Invalid memory address for transfer
+    InvalidAddress,
+    /// Target process does not exist
+    InvalidProcess,
+    /// Circular access attempt detected
+    CircularTransfer,
 }
 
 impl fmt::Display for IpcError {
@@ -148,6 +170,17 @@ impl fmt::Display for IpcError {
             IpcError::NoMessage => write!(f, "No message available"),
             IpcError::InvalidChannelId => write!(f, "Invalid channel ID"),
             IpcError::ConnectionRefused => write!(f, "Connection refused"),
+            IpcError::InvalidSender => write!(f, "Invalid sender"),
+            IpcError::ChannelFull => write!(f, "Channel full"),
+            IpcError::HandleNotFound => write!(f, "Handle not found"),
+            IpcError::InvalidRange => write!(f, "Invalid memory range"),
+            IpcError::AccessDenied => write!(f, "Access denied"),
+            IpcError::TransferFailed => write!(f, "Transfer failed"),
+            IpcError::MappingFailed => write!(f, "Mapping failed"),
+            IpcError::UnmappingFailed => write!(f, "Unmapping failed"),
+            IpcError::InvalidAddress => write!(f, "Invalid address"),
+            IpcError::InvalidProcess => write!(f, "Invalid process"),
+            IpcError::CircularTransfer => write!(f, "Circular transfer detected"),
         }
     }
 }

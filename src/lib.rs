@@ -31,8 +31,7 @@ pub mod error;
 pub mod cpu;
 pub mod testing;
 
-// テストスイート
-#[cfg(test)]
+// テストスイート (ブートテスト用に常時利用可能)
 pub mod tests;
 
 pub fn init() {

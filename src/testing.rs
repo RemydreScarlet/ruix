@@ -3,11 +3,16 @@
 //! This module provides a comprehensive testing framework for the kernel,
 //! allowing for unit tests, integration tests, and system tests.
 
+pub mod boot_check;
+
+pub use boot_check::{run_boot_checks, quick_boot_check, BootChecker};
+
 use crate::error::{KernelError, KernelResult};
 use core::fmt;
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use alloc::format;
+use alloc::vec;
 
 /// Test result type
 pub type TestResult = Result<(), TestError>;
@@ -42,6 +47,13 @@ impl fmt::Display for TestError {
             TestError::TeardownFailed(msg) => write!(f, "Teardown failed: {}", msg),
             TestError::ResourceUnavailable(msg) => write!(f, "Resource unavailable: {}", msg),
         }
+    }
+}
+
+/// Convert KernelError to TestError for test compatibility
+impl From<crate::error::KernelError> for TestError {
+    fn from(error: crate::error::KernelError) -> Self {
+        TestError::AssertionFailed(format!("Kernel error: {:?}", error))
     }
 }
 
@@ -467,7 +479,7 @@ macro_rules! assert_err {
 }
 
 /// Get current time (simple implementation)
-fn get_current_time() -> u64 {
+pub fn get_current_time() -> u64 {
     // In a real implementation, you'd use a proper timer
     // For now, we'll use a simple counter
     static mut TIME_COUNTER: u64 = 0;
