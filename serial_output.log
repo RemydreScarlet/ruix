@@ -1,9 +1,12 @@
 Starting Ruix 0.1 - Boot Check Mode
-CPU_DATA address: 0x28bde8
+CPU_DATA address: 0x28ca70
+CPU subsystem initialized with 1 CPU(s)
 Testing serial port...
 Serial port initializing...
 Serial port initialized
 Serial port test completed
+Global memory manager initialized with 64 CPUs
+Scalable memory management system initialized
 Heap initialized - Running boot checks...
 🚀 STARTING BOOT CHECK SEQUENCE
 BOOT_CHECK: Testing basic kernel functionality...
@@ -21,7 +24,67 @@ BOOT_CHECK: Testing system calls...
 [OK] Current PID
 BOOT_CHECK: Running comprehensive test suites...
 BOOT_CHECK: Running Memory Management suite...
-panicked at src/memory/scalable.rs:455:45:
-unsafe precondition(s) violated: hint::unreachable_unchecked must never be reached
-
-This indicates a bug in the program. This Undefined Behavior check is optional, and cannot be relied on for safety.
+[OK] simple_allocation
+[OK] allocation_with_flags
+[OK] memory_statistics
+[OK] page_mapping
+BOOT_CHECK: Running CPU Management suite...
+[OK] cpu_data_access
+[OK] cpu_statistics
+[OK] interrupt_handling
+BOOT_CHECK: Running Error Handling suite...
+[OK] error_creation
+[OK] error_conversion
+[OK] recovery_strategies
+BOOT_CHECK: Running Integration suite...
+[OK] memory_cpu_integration
+[OK] error_propagation
+BOOT_CHECK: Running IPC System suite...
+=== IPC Boot Sequence Test ===
+Testing message IPC...
+✓ Channel 1 created
+Testing memory handle creation...
+✓ Memory handle 1 created
+✓ Handle validation passed
+Testing basic memory transfer...
+IPC: Memory handle 2 transfer: PID 0 -> PID 2 (mode: Ownership, pages: 1)
+IPC: Memory handle 2 transfer initiated: PID 0 -> PID 2
+✓ Memory transfer initiated
+=== IPC Boot Test Completed ===
+[OK] ipc_boot_sequence
+Testing IPC cleanup...
+✓ Channel cleanup completed
+[OK] ipc_cleanup
+Testing page table operations...
+✓ Page table operations trait implemented
+[OK] page_table_ops
+=== Running All IPC Tests ===
+=== IPC Boot Sequence Test ===
+Testing message IPC...
+✓ Channel 3 created
+Testing memory handle creation...
+✓ Memory handle 3 created
+✓ Handle validation passed
+Testing basic memory transfer...
+IPC: Memory handle 4 transfer: PID 0 -> PID 2 (mode: Ownership, pages: 1)
+IPC: Memory handle 4 transfer initiated: PID 0 -> PID 2
+✓ Memory transfer initiated
+=== IPC Boot Test Completed ===
+Testing IPC cleanup...
+✓ Channel cleanup completed
+Testing page table operations...
+✓ Page table operations trait implemented
+All IPC tests completed
+[OK] all_ipc_tests
+✅ All boot checks passed successfully
+All boot checks passed - Starting IPC implementation
+Loading syscall test at 0x500000 to frame 0x2a6000
+Syscall test loaded successfully
+Timer initialized: 10Hz (default timeout: 30 ticks)
+Preparing to jump to user mode...
+User code address: 0x400000, Stack top: 0x601000
+Attempting user mode jump with timeout protection...
+TIMEOUT: Process 1 registered with limit 30 ticks
+TIMEOUT: User mode started for PID 1 at tick 0
+Testing in kernel mode first...
+Executing user code in kernel mode at 0x180002a2000...

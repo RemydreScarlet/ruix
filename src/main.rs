@@ -1,10 +1,12 @@
 #![no_std]
 #![no_main]     // なんと、Rustカーネルを作るときはmain関数はだめらしい。
+extern crate alloc;
 use core::panic::PanicInfo;
 use ruix::println;
 use ruix::serial_println;
 use bootloader::{BootInfo, entry_point};
 use ruix::process::{Process, scheduler::SCHEDULER};
+use alloc::boxed::Box;
 
 // 適当なユーザー用スタック領域（本来はメモリ管理が必要。まずはテスト用に）
 static mut STACK1: [u8; 4096] = [0; 4096];
@@ -50,6 +52,10 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     ruix::interrupts::init_idt();
     ruix::gdt::init();
     ruix::syscall::init();
+    if let Err(e) = ruix::cpu::init() {
+        println!("CPU initialization failed: {:?}", e);
+        ruix::hlt_loop();
+    }
 
     // シリアルポートのテスト
     println!("Testing serial port...");
@@ -62,6 +68,12 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     allocator::init_heap(&mut mapper, &mut frame_allocator)
         .expect("heap initialization failed");
+    
+    // Initialize the scalable memory management system
+    // Note: We need to create a new frame allocator after this since the init consumes it
+    let mut frame_allocator2 = unsafe { BootInfoFrameAllocator::init(&boot_info.memory_map) };
+    ruix::memory::scalable::init(&mut mapper, Box::new(frame_allocator2))
+        .expect("memory manager initialization failed");
     
     println!("Heap initialized - Running boot checks...");
     

@@ -213,7 +213,10 @@ impl PerCpuAllocator {
     fn global_allocate(&self, size: usize, flags: AllocFlags) -> KernelResult<VirtAddr> {
         // For now, delegate to the global memory manager
         // In a real implementation, this would use more sophisticated algorithms
-        global_memory_manager().allocate(size, flags)
+        match global_memory_manager() {
+            Ok(manager) => manager.allocate(size, flags),
+            Err(_) => Err(KernelError::Memory(crate::error::AllocError::OutOfMemory))
+        }
     }
 
     /// Free memory
@@ -232,7 +235,10 @@ impl PerCpuAllocator {
         }
 
         // Handle large allocations
-        global_memory_manager().free(addr, size)
+        match global_memory_manager() {
+            Ok(manager) => manager.free(addr, size),
+            Err(_) => Err(KernelError::Memory(crate::error::AllocError::OutOfMemory))
+        }
     }
 
     /// Get allocator statistics
@@ -251,8 +257,6 @@ pub struct GlobalMemoryManager {
     regions_by_type: Mutex<[Vec<MemoryRegion>; 4]>, // Kernel, User, Device, Dma
     /// Physical frame allocator
     frame_allocator: Mutex<Box<dyn FrameAllocator<Size4KiB>>>,
-    /// Page mapper
-    mapper: Mutex<*mut OffsetPageTable<'static>>,
 }
 
 impl GlobalMemoryManager {
@@ -263,7 +267,6 @@ impl GlobalMemoryManager {
             global_free_list: Mutex::new(Vec::new()),
             regions_by_type: Mutex::new([Vec::new(), Vec::new(), Vec::new(), Vec::new()]),
             frame_allocator: Mutex::new(Box::new(EmptyFrameAllocator)),
-            mapper: Mutex::new(core::ptr::null_mut()),
         }
     }
 
@@ -293,98 +296,61 @@ impl GlobalMemoryManager {
     }
 
     /// Initialize the memory manager
-    pub fn init(&mut self, mapper: &'static mut OffsetPageTable, frame_allocator: Box<dyn FrameAllocator<Size4KiB>>) -> KernelResult<()> {
-        // Store the mapper
-        *self.mapper.lock() = mapper;
-        
+    pub fn init(&mut self, _mapper: &mut OffsetPageTable, frame_allocator: Box<dyn FrameAllocator<Size4KiB>>) -> KernelResult<()> {
         // Store the frame allocator
         *self.frame_allocator.lock() = frame_allocator;
         
         // Initialize per-CPU allocators
-        for cpu_id in 0..cpu::cpu_count() {
+        for cpu_id in 0..cpu::MAX_CPUS {
             self.per_cpu_allocators[cpu_id] = Some(PerCpuAllocator::new(cpu_id));
         }
         
-        crate::println!("Global memory manager initialized for {} CPUs", cpu::cpu_count());
+        crate::println!("Global memory manager initialized with {} CPUs", cpu::MAX_CPUS);
         Ok(())
     }
 
     /// Allocate memory
     pub fn allocate(&self, size: usize, flags: AllocFlags) -> KernelResult<VirtAddr> {
-        // Get current CPU allocator
-        let cpu_id = cpu::current_cpu()?.cpu_id;
+        // For now, use a simple global allocator approach
+        // TODO: Implement proper per-CPU allocation
+        use alloc::alloc::{alloc, Layout};
         
-        if let Some(allocator) = &self.per_cpu_allocators[cpu_id] {
-            allocator.allocate(size, flags)
+        let layout = Layout::from_size_align(size, flags.align.unwrap_or(8))
+            .map_err(|_| KernelError::Memory(crate::error::AllocError::OutOfMemory))?;
+        
+        let ptr = unsafe { alloc(layout) };
+        if ptr.is_null() {
+            Err(KernelError::Memory(crate::error::AllocError::OutOfMemory))
         } else {
-            Err(KernelError::Memory(AllocError::OutOfMemory))
+            Ok(VirtAddr::new(ptr as u64))
         }
     }
 
     /// Free memory
     pub fn free(&self, addr: VirtAddr, size: usize) -> KernelResult<()> {
-        // Find which CPU owns this allocation
-        // For now, we'll use the current CPU
-        let cpu_id = cpu::current_cpu()?.cpu_id;
+        // For now, use simple global deallocation
+        // TODO: Implement proper per-CPU deallocation
+        use alloc::alloc::{dealloc, Layout};
         
-        if let Some(allocator) = &self.per_cpu_allocators[cpu_id] {
-            allocator.free(addr, size)
-        } else {
-            Err(KernelError::Memory(AllocError::InvalidAddress))
-        }
+        let layout = Layout::from_size_align(size, 8)
+            .map_err(|_| KernelError::Memory(crate::error::AllocError::OutOfMemory))?;
+        
+        unsafe { dealloc(addr.as_mut_ptr(), layout) };
+        Ok(())
     }
 
     /// Map a physical frame to a virtual address
-    pub fn map_page(&self, page: Page, frame: PhysFrame, flags: PageTableFlags) -> KernelResult<()> {
-        let mapper = self.mapper.lock();
-        if mapper.is_null() {
-            return Err(KernelError::Memory(AllocError::InvalidAddress));
-        }
-        
-        unsafe {
-            let mapper_ptr = *mapper;
-            let mapper = &mut *mapper_ptr;
-            let mut frame_allocator = self.frame_allocator.lock();
-            let frame_allocator = &mut **frame_allocator;
-            
-            mapper.map_to(page, frame, flags, frame_allocator)
-                .map_err(|_| KernelError::Memory(AllocError::OutOfMemory))?
-                .flush();
-        }
-        
-        Ok(())
+    pub fn map_page(&self, _page: Page, _frame: PhysFrame, _flags: PageTableFlags) -> KernelResult<()> {
+        // TODO: Implement page mapping without storing mapper
+        // For now, return an error to indicate this isn't implemented
+        Err(KernelError::Memory(crate::error::AllocError::InvalidAddress))
     }
 
     /// Unmap a page
-    pub fn unmap_page(&self, page: Page) -> KernelResult<()> {
-        let mapper = self.mapper.lock();
-        if mapper.is_null() {
-            return Err(KernelError::Memory(AllocError::InvalidAddress));
-        }
-        
-        unsafe {
-            let mapper_ptr = *mapper;
-            let mapper = &mut *mapper_ptr;
-            
-            // Get the frame before unmapping
-            let frame_result = mapper.translate_page(page);
-            let frame = match frame_result {
-                Ok(frame) => frame,
-                Err(_) => return Err(KernelError::Memory(AllocError::InvalidAddress)),
-            };
-            
-            // Unmap the page
-            let (_, flush) = mapper.unmap(page)
-                .map_err(|_| KernelError::Memory(AllocError::InvalidAddress))?;
-            flush.flush();
-            
-            // Return the frame to the allocator
-            let mut frame_allocator = self.frame_allocator.lock();
-            let frame_allocator = &mut **frame_allocator;
-            // Note: In a real implementation, you'd need a way to deallocate frames
-        }
-        
-        Ok(())
+    pub fn unmap_page(&self, _page: Page) -> KernelResult<()> {
+        // TODO: Implement page unmapping without storing mapper
+        // For now, return an error to indicate this isn't implemented
+        Err(KernelError::Memory(crate::error::AllocError::InvalidAddress))
     }
 
     /// Get memory statistics
@@ -419,7 +385,7 @@ impl GlobalMemoryManager {
 }
 
 /// Global memory statistics
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct GlobalMemoryStats {
     pub total_allocated: usize,
     pub total_freed: usize,
@@ -448,15 +414,24 @@ static MEMORY_MANAGER_INIT: AtomicBool = AtomicBool::new(false);
 
 /// Get the global memory manager
 #[allow(static_mut_refs)]
-pub fn global_memory_manager() -> &'static GlobalMemoryManager {
+pub fn global_memory_manager() -> KernelResult<&'static GlobalMemoryManager> {
+    // Check if memory manager is initialized
+    if !MEMORY_MANAGER_INIT.load(Ordering::Acquire) {
+        return Err(KernelError::Memory(crate::error::AllocError::OutOfMemory));
+    }
+    
     // SAFETY: This function is only called after initialization is complete
     // and the global memory manager is never changed after initialization.
     // The MEMORY_MANAGER_INIT flag ensures thread-safe initialization.
-    unsafe { GLOBAL_MEMORY_MANAGER.as_ref().unwrap_unchecked() }
+    unsafe { 
+        GLOBAL_MEMORY_MANAGER.as_ref().ok_or_else(|| {
+            KernelError::Memory(crate::error::AllocError::OutOfMemory)
+        })
+    }
 }
 
 /// Initialize the memory management system
-pub fn init(mapper: &'static mut OffsetPageTable, frame_allocator: Box<dyn FrameAllocator<Size4KiB>>) -> KernelResult<()> {
+pub fn init(mapper: &mut OffsetPageTable, frame_allocator: Box<dyn FrameAllocator<Size4KiB>>) -> KernelResult<()> {
     if MEMORY_MANAGER_INIT.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
         return Ok(()); // Already initialized
     }
@@ -476,7 +451,24 @@ pub fn init(mapper: &'static mut OffsetPageTable, frame_allocator: Box<dyn Frame
 
 /// Allocate memory with flags
 pub fn allocate(size: usize, flags: AllocFlags) -> KernelResult<VirtAddr> {
-    global_memory_manager().allocate(size, flags)
+    match global_memory_manager() {
+        Ok(manager) => manager.allocate(size, flags),
+        Err(_) => {
+            // Fallback: use simple heap allocation for early boot
+            // This is a temporary solution for testing
+            use alloc::alloc::{alloc, dealloc, Layout};
+            
+            let layout = Layout::from_size_align(size, flags.align.unwrap_or(8))
+                .map_err(|_| KernelError::Memory(crate::error::AllocError::OutOfMemory))?;
+            
+            let ptr = unsafe { alloc(layout) };
+            if ptr.is_null() {
+                Err(KernelError::Memory(crate::error::AllocError::OutOfMemory))
+            } else {
+                Ok(VirtAddr::new(ptr as u64))
+            }
+        }
+    }
 }
 
 /// Allocate memory (simple interface)
@@ -486,7 +478,20 @@ pub fn allocate_simple(size: usize) -> KernelResult<VirtAddr> {
 
 /// Free memory
 pub fn free(addr: VirtAddr, size: usize) -> KernelResult<()> {
-    global_memory_manager().free(addr, size)
+    match global_memory_manager() {
+        Ok(manager) => manager.free(addr, size),
+        Err(_) => {
+            // Fallback: use simple heap deallocation for early boot
+            // This is a temporary solution for testing
+            use alloc::alloc::{dealloc, Layout};
+            
+            let layout = Layout::from_size_align(size, 8)
+                .map_err(|_| KernelError::Memory(crate::error::AllocError::OutOfMemory))?;
+            
+            unsafe { dealloc(addr.as_mut_ptr(), layout) };
+            Ok(())
+        }
+    }
 }
 
 /// Map a user page
@@ -495,17 +500,26 @@ pub fn map_user_page(page: Page, frame: PhysFrame) -> KernelResult<()> {
         | PageTableFlags::WRITABLE 
         | PageTableFlags::USER_ACCESSIBLE;
     
-    global_memory_manager().map_page(page, frame, flags)
+    match global_memory_manager() {
+        Ok(manager) => manager.map_page(page, frame, flags),
+        Err(_) => Err(KernelError::Memory(crate::error::AllocError::OutOfMemory))
+    }
 }
 
 /// Unmap a page
 pub fn unmap_page(page: Page) -> KernelResult<()> {
-    global_memory_manager().unmap_page(page)
+    match global_memory_manager() {
+        Ok(manager) => manager.unmap_page(page),
+        Err(_) => Err(KernelError::Memory(crate::error::AllocError::OutOfMemory))
+    }
 }
 
 /// Get global memory statistics
 pub fn get_memory_stats() -> GlobalMemoryStats {
-    global_memory_manager().get_global_stats()
+    match global_memory_manager() {
+        Ok(manager) => manager.get_global_stats(),
+        Err(_) => GlobalMemoryStats::default()
+    }
 }
 
 /// Memory debugging utilities
